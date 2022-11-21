@@ -14,6 +14,7 @@ type CommonMessage struct {
 }
 
 type Serialization interface {
+	RegisterType(identity string, v any) error
 	Marshal(message CommonMessage) (data []byte, err error)
 	Unmarshal(data []byte) (message CommonMessage, err error)
 }

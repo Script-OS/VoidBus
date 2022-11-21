@@ -41,7 +41,11 @@ func (bus *Master) Start() error {
 	// a block function
 	for _, p := range bus.Protocols {
 		go func(p protocol.Protocol) {
-			sessionChan := p.Accept()
+			sessionChan, err := p.Accept()
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
 			for {
 				select {
 				case s := <-sessionChan:
@@ -57,6 +61,7 @@ func (bus *Master) Start() error {
 			}
 		}(p)
 	}
+	// TODO: block?
 	return nil
 }
 

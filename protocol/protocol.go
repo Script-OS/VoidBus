@@ -9,6 +9,6 @@ type Session interface {
 }
 
 type Protocol interface {
-	Accept() chan Session
-	Dial() Session
+	Accept() (chan Session, error)
+	Dial() (Session, error)
 }
