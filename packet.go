@@ -207,8 +207,13 @@ func DecodePacket(data []byte) (*Packet, error) {
 
 	// Read header length
 	headerLen := binary.BigEndian.Uint32(data[0:4])
-	if len(data) < int(4+headerLen) {
+	if int(headerLen) > len(data)-4 {
 		return nil, ErrInvalidPacket
+	}
+
+	// Check minimum header length
+	if headerLen < 15 {
+		return nil, ErrInvalidHeader
 	}
 
 	// Decode header
