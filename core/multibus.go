@@ -1,4 +1,4 @@
-// Package voidbus provides MultiBus implementation for multi-channel transmission.
+// Package core provides MultiBus implementation for multi-channel transmission.
 //
 // MultiBus implements multi-channel combination strategy: data is fragmented
 // and distributed across multiple channels for transmission.
@@ -10,20 +10,7 @@
 // - Channel config NOT exposed in metadata
 // - FragmentInfo CAN be exposed (ID/Index/Total only)
 // - Full-duplex on each channel
-//
-// Send Strategy:
-//   - Random: fragments randomly distributed to channels
-//   - Specified: all fragments sent through specified channel
-//
-// Receive Strategy:
-//   - Receive from all channels simultaneously
-//   - FragmentManager reassembles fragments
-//
-// Data Flow:
-//
-//	Send: data → Serializer.Serialize → CodecChain.Encode → Fragment.Split → Channel.Send
-//	Receive: Channel.Receive → FragmentManager.Reassemble → CodecChain.Decode → Serializer.Deserialize
-package voidbus
+package core
 
 import (
 	"errors"
@@ -41,155 +28,12 @@ import (
 
 // MultiBus errors
 var (
-	// ErrMultiBusNotRunning indicates multi bus is not running
-	ErrMultiBusNotRunning = errors.New("multibus: not running")
-	// ErrMultiBusAlreadyRunning indicates multi bus is already running
+	ErrMultiBusNotRunning     = errors.New("multibus: not running")
 	ErrMultiBusAlreadyRunning = errors.New("multibus: already running")
-	// ErrChannelsRequired indicates channels are required
-	ErrChannelsRequired = errors.New("multibus: at least one channel required")
-	// ErrNoAvailableChannel indicates no available channel
-	ErrNoAvailableChannel = errors.New("multibus: no available channel")
-	// ErrChannelSelectionFailed indicates channel selection failed
+	ErrChannelsRequired       = errors.New("multibus: at least one channel required")
+	ErrNoAvailableChannel     = errors.New("multibus: no available channel")
 	ErrChannelSelectionFailed = errors.New("multibus: channel selection failed")
-	// ErrFragmentationFailed indicates fragmentation failed
-	ErrFragmentationFailed = errors.New("multibus: fragmentation failed")
 )
-
-// ChannelSelectionStrategy defines how channels are selected for sending.
-type ChannelSelectionStrategy int
-
-const (
-	// StrategyRandom randomly selects channels for each fragment
-	StrategyRandom ChannelSelectionStrategy = iota
-	// StrategyRoundRobin selects channels in round-robin order
-	StrategyRoundRobin
-	// StrategyWeighted selects channels based on weights
-	StrategyWeighted
-	// StrategySpecified uses a specified channel index
-	StrategySpecified
-)
-
-// String returns string representation.
-func (s ChannelSelectionStrategy) String() string {
-	switch s {
-	case StrategyRandom:
-		return "random"
-	case StrategyRoundRobin:
-		return "round_robin"
-	case StrategyWeighted:
-		return "weighted"
-	case StrategySpecified:
-		return "specified"
-	default:
-		return "unknown"
-	}
-}
-
-// ChannelInfo contains information about a channel in the pool.
-type ChannelInfo struct {
-	// Index is the channel index in the pool
-	Index int
-
-	// Channel is the channel instance
-	Channel channel.Channel
-
-	// Weight is the weight for weighted selection (0-100)
-	Weight int
-
-	// Status is the channel status
-	Status ChannelStatus
-
-	// LastActivity is last activity timestamp
-	LastActivity time.Time
-
-	// SendCount is number of fragments sent through this channel
-	SendCount int64
-
-	// ReceiveCount is number of fragments received through this channel
-	ReceiveCount int64
-
-	// ErrorCount is number of errors encountered
-	ErrorCount int64
-}
-
-// ChannelStatus represents channel status.
-type ChannelStatus int
-
-const (
-	// ChannelStatusActive indicates channel is active
-	ChannelStatusActive ChannelStatus = iota
-	// ChannelStatusInactive indicates channel is inactive
-	ChannelStatusInactive
-	// ChannelStatusError indicates channel has error
-	ChannelStatusError
-)
-
-// String returns string representation.
-func (s ChannelStatus) String() string {
-	switch s {
-	case ChannelStatusActive:
-		return "active"
-	case ChannelStatusInactive:
-		return "inactive"
-	case ChannelStatusError:
-		return "error"
-	default:
-		return "unknown"
-	}
-}
-
-// MultiBusConfig provides configuration for MultiBus.
-type MultiBusConfig struct {
-	// SelectionStrategy is the channel selection strategy
-	SelectionStrategy ChannelSelectionStrategy
-
-	// SpecifiedChannelIndex is the specified channel index (for StrategySpecified)
-	SpecifiedChannelIndex int
-
-	// MaxFragmentSize is maximum fragment size in bytes
-	MaxFragmentSize int
-
-	// EnableFragmentation enables data fragmentation (default true)
-	EnableFragmentation bool
-
-	// FragmentTimeout is reassembly timeout in seconds
-	FragmentTimeout int
-
-	// SendQueueSize is send queue buffer size per channel
-	SendQueueSize int
-
-	// ReceiveWorkers is number of receive workers per channel
-	ReceiveWorkers int
-
-	// AutoReconnect enables automatic channel reconnection
-	AutoReconnect bool
-
-	// ReconnectDelay is delay between reconnection attempts in seconds
-	ReconnectDelay int
-
-	// MaxReconnectAttempts is maximum reconnection attempts (0 = unlimited)
-	MaxReconnectAttempts int
-
-	// EnableChecksum enables fragment checksum verification
-	EnableChecksum bool
-}
-
-// DefaultMultiBusConfig returns default multi bus configuration.
-func DefaultMultiBusConfig() MultiBusConfig {
-	return MultiBusConfig{
-		SelectionStrategy:     StrategyRandom,
-		SpecifiedChannelIndex: 0,
-		MaxFragmentSize:       1024,
-		EnableFragmentation:   true,
-		FragmentTimeout:       60,
-		SendQueueSize:         100,
-		ReceiveWorkers:        1,
-		AutoReconnect:         true,
-		ReconnectDelay:        3,
-		MaxReconnectAttempts:  0,
-		EnableChecksum:        true,
-	}
-}
 
 // MultiBus is the multi-channel bus implementation.
 type MultiBus struct {
@@ -289,7 +133,7 @@ func (m *MultiBus) AddChannel(ch channel.Channel, weight int) *MultiBus {
 		Channel:      ch,
 		Weight:       weight,
 		Status:       ChannelStatusActive,
-		LastActivity: time.Now(),
+		LastActivity: time.Now().Unix(),
 	})
 
 	return m
@@ -322,10 +166,10 @@ func (m *MultiBus) Start() error {
 
 	// Validate required modules
 	if m.serializer == nil {
-		return ErrSerializerRequired
+		return errors.New("multibus: serializer required")
 	}
 	if m.codecChain == nil {
-		return ErrCodecChainRequired
+		return errors.New("multibus: codec chain required")
 	}
 	if len(m.channels) == 0 {
 		return ErrChannelsRequired
@@ -481,7 +325,7 @@ func (m *MultiBus) sendFragment(channelIndex int, data []byte) error {
 	}
 
 	info.SendCount++
-	info.LastActivity = time.Now()
+	info.LastActivity = time.Now().Unix()
 	return nil
 }
 
@@ -598,7 +442,7 @@ func (m *MultiBus) receiveFromChannel(channelIndex int) ([]byte, error) {
 	}
 
 	info.ReceiveCount++
-	info.LastActivity = time.Now()
+	info.LastActivity = time.Now().Unix()
 
 	// Check if fragmentation enabled
 	if m.config.EnableFragmentation && m.fragment != nil {

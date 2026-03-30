@@ -1,4 +1,11 @@
-package voidbus
+// Package protocol provides message structures for VoidBus communication.
+//
+// Message is a higher-level abstraction over Packet, providing:
+//   - Unique message identifier
+//   - Priority handling
+//   - Time-to-live (TTL) expiration
+//   - Fragment metadata
+package protocol
 
 // Message represents a message in the bus
 type Message struct {
@@ -59,5 +66,3 @@ type MessageHandlerFunc func(message Message) error
 func (f MessageHandlerFunc) Handle(message Message) error {
 	return f(message)
 }
-
-// Common errors are defined in errors.go

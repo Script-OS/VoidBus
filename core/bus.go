@@ -1,4 +1,4 @@
-// Package voidbus provides the core Bus implementation for VoidBus.
+// Package core provides the core Bus implementation for VoidBus.
 //
 // Bus is the central component that coordinates all modules:
 // - Serializer: Data serialization (can be exposed in metadata)
@@ -14,7 +14,7 @@
 // Data Flow (Receive):
 //
 //	Channel.Receive -> [Fragment.Reassemble] -> CodecChain.Decode -> Serializer.Deserialize -> data
-package voidbus
+package core
 
 import (
 	"errors"
@@ -29,7 +29,7 @@ import (
 	"VoidBus/serializer"
 )
 
-// Bus errors are defined in errors.go
+// Bus errors are defined in VoidBus/errors.go
 
 // BusConfig provides configuration for Bus.
 type BusConfig struct {
@@ -191,18 +191,18 @@ func (b *Bus) Start() error {
 	defer b.mu.Unlock()
 
 	if b.running {
-		return ErrBusAlreadyRunning
+		return errors.New("bus: already running")
 	}
 
 	// Validate required modules
 	if b.serializer == nil {
-		return ErrSerializerRequired
+		return errors.New("bus: serializer required")
 	}
 	if b.codecChain == nil {
-		return ErrCodecChainRequired
+		return errors.New("bus: codec chain required")
 	}
 	if b.channel == nil {
-		return ErrChannelRequired
+		return errors.New("bus: channel required")
 	}
 
 	// Set key provider for codec chain
@@ -234,7 +234,7 @@ func (b *Bus) Stop() error {
 	defer b.mu.Unlock()
 
 	if !b.running {
-		return ErrBusNotRunning
+		return errors.New("bus: not running")
 	}
 
 	b.running = false
@@ -254,7 +254,7 @@ func (b *Bus) Send(data []byte) error {
 	defer b.mu.RUnlock()
 
 	if !b.running {
-		return ErrBusNotRunning
+		return errors.New("bus: not running")
 	}
 
 	// Queue for async send
@@ -336,7 +336,7 @@ func (b *Bus) Receive() ([]byte, error) {
 	defer b.mu.RUnlock()
 
 	if !b.running {
-		return nil, ErrBusNotRunning
+		return nil, errors.New("bus: not running")
 	}
 
 	return b.receiveSync()

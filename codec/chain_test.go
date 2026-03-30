@@ -193,7 +193,7 @@ func TestChain_SetKeyProvider_Nil(t *testing.T) {
 	chain.AddCodec(&mockCodec{})
 
 	err := chain.SetKeyProvider(nil)
-	if err != ErrInvalidKeyProvider {
+	if !errors.Is(err, ErrInvalidKeyProvider) {
 		t.Errorf("SetKeyProvider(nil) should return ErrInvalidKeyProvider, got %v", err)
 	}
 }

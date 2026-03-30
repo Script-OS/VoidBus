@@ -1,5 +1,17 @@
-// Package voidbus provides handshake protocol for session negotiation.
-package voidbus
+// Package protocol provides handshake protocol for VoidBus session negotiation.
+//
+// Handshake Protocol:
+//
+//	Client -> Server: HandshakeRequest (supported serializers, codec chain info)
+//	Server -> Client: HandshakeResponse (accept/reject, selected serializer, challenge)
+//	Client -> Server: HandshakeConfirm (session ID, challenge response)
+//
+// Security Design:
+//   - Serializer name CAN be exposed
+//   - Codec names MUST NOT be exposed (only security level)
+//   - Challenge mechanism prevents degradation attacks
+//   - Release mode MUST use SecurityLevelMedium or higher
+package protocol
 
 import (
 	"errors"
@@ -18,6 +30,7 @@ var (
 	ErrDegradationAttack     = errors.New("handshake: potential degradation attack detected")
 	ErrInvalidRequest        = errors.New("handshake: invalid request")
 	ErrInvalidResponse       = errors.New("handshake: invalid response")
+	ErrInvalidSessionID      = errors.New("handshake: invalid session ID")
 )
 
 // HandshakeRequest is sent by client to initiate negotiation.
@@ -456,4 +469,9 @@ func (m *HandshakeManager) CleanupExpired() {
 			delete(m.states, id)
 		}
 	}
+}
+
+// GetPolicy returns the current negotiation policy.
+func (m *HandshakeManager) GetPolicy() NegotiationPolicy {
+	return m.policy
 }

@@ -1,4 +1,4 @@
-// Package voidbus provides ServerBus implementation for server-side Hall mode.
+// Package core provides ServerBus implementation for server-side Hall mode.
 //
 // ServerBus implements the "Hall" pattern: listens for incoming connections,
 // performs handshake negotiation, and creates individual Bus instances for
@@ -10,17 +10,7 @@
 // - Handshake negotiation for security alignment
 // - SessionID used as client identifier (NOT exposed config)
 // - Challenge mechanism prevents degradation attacks
-//
-// Architecture:
-//
-//	ServerBus (Hall)
-//	  ├── ServerChannel (listener)
-//	  ├── HandshakeManager (negotiation)
-//	  └── ClientRegistry (session -> Bus mapping)
-//	        ├── ClientBus #1 (SessionID: xxx)
-//	        ├── ClientBus #2 (SessionID: yyy)
-//	        └── ...
-package voidbus
+package core
 
 import (
 	"errors"
@@ -31,117 +21,19 @@ import (
 	"VoidBus/codec"
 	"VoidBus/internal"
 	"VoidBus/keyprovider"
+	"VoidBus/protocol"
 	"VoidBus/serializer"
 )
 
-// ServerBus errors (additional errors not defined elsewhere)
+// ServerBus errors
 var (
-	// ErrServerBusNotRunning indicates server bus is not running
-	ErrServerBusNotRunning = errors.New("serverbus: not running")
-	// ErrServerBusAlreadyRunning indicates server bus is already running
+	ErrServerBusNotRunning     = errors.New("serverbus: not running")
 	ErrServerBusAlreadyRunning = errors.New("serverbus: already running")
-	// ErrServerChannelRequired indicates server channel is required
-	ErrServerChannelRequired = errors.New("serverbus: server channel required")
-	// ErrKeyProviderRequired indicates key provider is required for encryption
-	ErrKeyProviderRequired = errors.New("serverbus: key provider required for encryption")
-	// ErrClientNotFound indicates client session not found
-	ErrClientNotFound = errors.New("serverbus: client not found")
-	// ErrClientDisconnected indicates client disconnected
-	ErrClientDisconnected = errors.New("serverbus: client disconnected")
+	ErrServerChannelRequired   = errors.New("serverbus: server channel required")
+	ErrKeyProviderRequired     = errors.New("serverbus: key provider required for encryption")
+	ErrClientNotFound          = errors.New("serverbus: client not found")
+	ErrClientDisconnected      = errors.New("serverbus: client disconnected")
 )
-
-// ServerBusConfig provides configuration for ServerBus.
-type ServerBusConfig struct {
-	// NegotiationPolicy is the security negotiation policy
-	NegotiationPolicy NegotiationPolicy
-
-	// MaxClients is maximum number of concurrent clients (0 = unlimited)
-	MaxClients int
-
-	// HandshakeTimeout is handshake timeout in seconds
-	HandshakeTimeout int
-
-	// ClientTimeout is client idle timeout in seconds (0 = no timeout)
-	ClientTimeout int
-
-	// AutoCleanup enables automatic cleanup of disconnected clients
-	AutoCleanup bool
-
-	// CleanupInterval is cleanup interval in seconds
-	CleanupInterval int
-}
-
-// DefaultServerBusConfig returns default server bus configuration.
-func DefaultServerBusConfig() ServerBusConfig {
-	return ServerBusConfig{
-		NegotiationPolicy: DefaultNegotiationPolicy(),
-		MaxClients:        100,
-		HandshakeTimeout:  30,
-		ClientTimeout:     300,
-		AutoCleanup:       true,
-		CleanupInterval:   60,
-	}
-}
-
-// ClientInfo contains information about a connected client.
-type ClientInfo struct {
-	// SessionID is the unique session identifier
-	SessionID string
-
-	// ClientID is the client's identifier (from handshake)
-	ClientID string
-
-	// ConnectedAt is connection timestamp
-	ConnectedAt time.Time
-
-	// LastActivity is last activity timestamp
-	LastActivity time.Time
-
-	// Serializer is the negotiated serializer name
-	Serializer string
-
-	// SecurityLevel is the negotiated security level
-	SecurityLevel codec.SecurityLevel
-
-	// RemoteAddress is the client's remote address
-	RemoteAddress string
-
-	// Bus is the client's Bus instance
-	Bus *Bus
-
-	// Status is the client's status
-	Status ClientStatus
-}
-
-// ClientStatus represents client connection status.
-type ClientStatus int
-
-const (
-	// ClientStatusConnecting indicates client is connecting
-	ClientStatusConnecting ClientStatus = iota
-	// ClientStatusHandshaking indicates client is handshaking
-	ClientStatusHandshaking
-	// ClientStatusActive indicates client is active
-	ClientStatusActive
-	// ClientStatusDisconnected indicates client is disconnected
-	ClientStatusDisconnected
-)
-
-// String returns string representation.
-func (s ClientStatus) String() string {
-	switch s {
-	case ClientStatusConnecting:
-		return "connecting"
-	case ClientStatusHandshaking:
-		return "handshaking"
-	case ClientStatusActive:
-		return "active"
-	case ClientStatusDisconnected:
-		return "disconnected"
-	default:
-		return "unknown"
-	}
-}
 
 // ServerBus is the server-side Hall mode implementation.
 type ServerBus struct {
@@ -156,14 +48,16 @@ type ServerBus struct {
 	// Configuration
 	config ServerBusConfig
 
+	// Protocol
+	handshake *protocol.HandshakeManager
+	busConfig BusConfig
+
 	// State
 	running bool
 	stopCh  chan struct{}
 
 	// Client registry
-	clients   map[string]*ClientInfo
-	handshake *HandshakeManager
-	busConfig BusConfig
+	clients map[string]*ClientInfo
 
 	// Handlers
 	onClientConnect    func(*ClientInfo)
@@ -183,7 +77,7 @@ func NewServerBusWithConfig(config ServerBusConfig) *ServerBus {
 		config:    config,
 		stopCh:    make(chan struct{}),
 		clients:   make(map[string]*ClientInfo),
-		handshake: NewHandshakeManager(config.NegotiationPolicy),
+		handshake: protocol.NewHandshakeManager(protocol.DefaultNegotiationPolicy()),
 		busConfig: DefaultBusConfig(),
 	}
 }
@@ -274,10 +168,10 @@ func (s *ServerBus) Start() error {
 		return ErrServerChannelRequired
 	}
 	if s.serializer == nil {
-		return ErrSerializerRequired
+		return errors.New("serverbus: serializer required")
 	}
 	if s.codecChain == nil {
-		return ErrCodecChainRequired
+		return errors.New("serverbus: codec chain required")
 	}
 
 	// Check if key provider is required
@@ -293,11 +187,6 @@ func (s *ServerBus) Start() error {
 
 	// Start accept loop
 	go s.acceptLoop()
-
-	// Start cleanup loop if enabled
-	if s.config.AutoCleanup {
-		go s.cleanupLoop()
-	}
 
 	return nil
 }
@@ -368,9 +257,9 @@ func (s *ServerBus) handleNewClient(clientChannel channel.Channel) {
 	tempSessionID := internal.GenerateSessionID()
 	tempClient := &ClientInfo{
 		SessionID:     tempSessionID,
-		ConnectedAt:   time.Now(),
-		LastActivity:  time.Now(),
-		RemoteAddress: string(clientChannel.Type()), // Simplified
+		ConnectedAt:   time.Now().Unix(),
+		LastActivity:  time.Now().Unix(),
+		RemoteAddress: string(clientChannel.Type()),
 		Status:        ClientStatusHandshaking,
 	}
 
@@ -440,7 +329,7 @@ func (s *ServerBus) performHandshake(clientChannel channel.Channel) (*Bus, strin
 
 	// If rejected, return error
 	if !response.Accepted {
-		return nil, "", ErrHandshakeFailed
+		return nil, "", protocol.ErrHandshakeFailed
 	}
 
 	// Step 3: Receive confirmation
@@ -464,7 +353,7 @@ func (s *ServerBus) performHandshake(clientChannel channel.Channel) (*Bus, strin
 	// Step 4: Create client Bus
 	bus := NewWithConfig(s.busConfig)
 	bus.SetSerializer(s.serializer)
-	bus.SetCodecChain(s.codecChain.Clone()) // Each client gets independent chain
+	bus.SetCodecChain(s.codecChain.Clone())
 	bus.SetChannel(clientChannel)
 
 	if s.keyProvider != nil {
@@ -498,7 +387,7 @@ func (s *ServerBus) handleClientMessages(client *ClientInfo) {
 			}
 
 			// Update last activity
-			client.LastActivity = time.Now()
+			client.LastActivity = time.Now().Unix()
 
 			// Call message handler
 			if s.onClientMessage != nil && data != nil {
@@ -526,33 +415,6 @@ func (s *ServerBus) handleClientDisconnect(client *ClientInfo) {
 	}
 }
 
-// cleanupLoop periodically cleans up disconnected clients.
-func (s *ServerBus) cleanupLoop() {
-	ticker := time.NewTicker(time.Duration(s.config.CleanupInterval) * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		case <-ticker.C:
-			s.cleanupDisconnected()
-		}
-	}
-}
-
-// cleanupDisconnected removes disconnected clients.
-func (s *ServerBus) cleanupDisconnected() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for sessionID, client := range s.clients {
-		if client.Status == ClientStatusDisconnected {
-			delete(s.clients, sessionID)
-		}
-	}
-}
-
 // SendTo sends data to a specific client.
 func (s *ServerBus) SendTo(sessionID string, data []byte) error {
 	s.mu.RLock()
@@ -571,7 +433,7 @@ func (s *ServerBus) SendTo(sessionID string, data []byte) error {
 		return ErrClientDisconnected
 	}
 
-	client.LastActivity = time.Now()
+	client.LastActivity = time.Now().Unix()
 	return client.Bus.Send(data)
 }
 
@@ -591,7 +453,7 @@ func (s *ServerBus) Broadcast(data []byte) error {
 				lastErr = err
 				s.handleError("broadcast", err)
 			}
-			client.LastActivity = time.Now()
+			client.LastActivity = time.Now().Unix()
 		}
 	}
 
@@ -660,31 +522,30 @@ func (s *ServerBus) handleError(op string, err error) {
 	}
 }
 
-// Handshake serialization helpers (simplified, should use proper serializer)
+// Handshake serialization helpers (simplified)
 
-func (s *ServerBus) deserializeHandshakeRequest(data []byte) (*HandshakeRequest, error) {
+func (s *ServerBus) deserializeHandshakeRequest(data []byte) (*protocol.HandshakeRequest, error) {
 	// Simplified: in real implementation, use serializer
-	// For now, return a default request
-	return &HandshakeRequest{
+	return &protocol.HandshakeRequest{
 		ClientID:             "client_" + string(data[:8]),
-		SupportedSerializers: []SerializerInfo{{Name: s.serializer.Name(), Priority: 10}},
-		SupportedCodecChains: []CodecChainInfo{
+		SupportedSerializers: []protocol.SerializerInfo{{Name: s.serializer.Name(), Priority: 10}},
+		SupportedCodecChains: []protocol.CodecChainInfo{
 			{SecurityLevel: s.codecChain.SecurityLevel(), ChainLength: s.codecChain.Length(), Hash: "default"},
 		},
-		MinSecurityLevel: s.config.NegotiationPolicy.MinSecurityLevel,
+		MinSecurityLevel: s.handshake.GetPolicy().MinSecurityLevel,
 		Timestamp:        time.Now().Unix(),
-		Version:          PacketVersion,
+		Version:          protocol.PacketVersion,
 	}, nil
 }
 
-func (s *ServerBus) serializeHandshakeResponse(resp *HandshakeResponse) ([]byte, error) {
+func (s *ServerBus) serializeHandshakeResponse(resp *protocol.HandshakeResponse) ([]byte, error) {
 	// Simplified: in real implementation, use serializer
 	return []byte(resp.SessionID), nil
 }
 
-func (s *ServerBus) deserializeHandshakeConfirm(data []byte) (*HandshakeConfirm, error) {
+func (s *ServerBus) deserializeHandshakeConfirm(data []byte) (*protocol.HandshakeConfirm, error) {
 	// Simplified: in real implementation, use serializer
-	return &HandshakeConfirm{
+	return &protocol.HandshakeConfirm{
 		SessionID:         string(data),
 		ChallengeResponse: data,
 		Timestamp:         time.Now().Unix(),
@@ -758,9 +619,8 @@ func (b *ServerBusBuilder) WithBusConfig(config BusConfig) *ServerBusBuilder {
 }
 
 // WithNegotiationPolicy sets the negotiation policy.
-func (b *ServerBusBuilder) WithNegotiationPolicy(policy NegotiationPolicy) *ServerBusBuilder {
-	b.serverBus.config.NegotiationPolicy = policy
-	b.serverBus.handshake = NewHandshakeManager(policy)
+func (b *ServerBusBuilder) WithNegotiationPolicy(policy protocol.NegotiationPolicy) *ServerBusBuilder {
+	b.serverBus.handshake = protocol.NewHandshakeManager(policy)
 	return b
 }
 

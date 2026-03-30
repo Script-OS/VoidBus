@@ -1,13 +1,8 @@
-// Package serializer defines the Serializer interface and registry for data
-// serialization/deserialization operations.
+// Package serializer provides the serializer registry for VoidBus.
 //
-// Serializer is responsible for converting data structures to/from byte streams.
-// Unlike Codec, Serializer can be exposed in metadata protocols for negotiation.
+// For interface definitions, see interface.go.
 //
 // Design Constraints (see docs/ARCHITECTURE.md §2.1.1):
-// - Serializer MUST NOT handle encoding/encryption
-// - Serializer MUST NOT handle data transmission
-// - Serializer MUST NOT handle data fragmentation
 // - Serializer.Name() CAN be exposed in metadata
 // - Serializer.Priority() is used for negotiation ordering
 package serializer
@@ -16,94 +11,13 @@ import (
 	"errors"
 )
 
-// Common serializer errors
+// Registry errors
 var (
-	// ErrInvalidData indicates the input data is invalid for serialization
-	ErrInvalidData = errors.New("serializer: invalid data")
-	// ErrSerializationFailed indicates the serialization process failed
-	ErrSerializationFailed = errors.New("serializer: serialization failed")
-	// ErrDeserializationFailed indicates the deserialization process failed
-	ErrDeserializationFailed = errors.New("serializer: deserialization failed")
-	// ErrSerializerNotFound indicates the requested serializer is not registered
-	ErrSerializerNotFound = errors.New("serializer: not found")
+	// ErrModuleAlreadyRegistered indicates module already registered
+	ErrModuleAlreadyRegistered = errors.New("serializer: module already registered")
+	// ErrNilModule indicates nil module
+	ErrNilModule = errors.New("serializer: cannot register nil module")
 )
-
-// Serializer is the core interface for data serialization/deserialization.
-// It is responsible for converting data structures to/from byte streams.
-// Serializer CAN be exposed in metadata protocols for negotiation between parties.
-//
-// Responsibilities:
-// - Convert data structures to byte streams (Serialize)
-// - Convert byte streams back to data structures (Deserialize)
-// - Provide a name for identification (Name)
-// - Provide a priority for negotiation ordering (Priority)
-//
-// NOT Responsible for:
-// - Data encoding/encryption (handled by Codec)
-// - Data transmission (handled by Channel)
-// - Data fragmentation (handled by Fragment)
-type Serializer interface {
-	// Serialize converts data to a byte stream.
-	//
-	// Parameter Constraints:
-	//   - data: MUST be non-nil byte slice, length >= 0
-	//
-	// Return Guarantees:
-	//   - On success: returns serialized byte stream, length >= 0
-	//   - On failure: returns nil and a specific error
-	//
-	// Error Types:
-	//   - ErrInvalidData: input data is invalid
-	//   - ErrSerializationFailed: serialization process failed
-	Serialize(data []byte) ([]byte, error)
-
-	// Deserialize converts a byte stream back to original data.
-	//
-	// Parameter Constraints:
-	//   - data: MUST be valid serialized format byte stream
-	//
-	// Return Guarantees:
-	//   - On success: returns original data
-	//   - On failure: returns nil and a specific error
-	//
-	// Error Types:
-	//   - ErrInvalidData: input data format is invalid
-	//   - ErrDeserializationFailed: deserialization process failed
-	Deserialize(data []byte) ([]byte, error)
-
-	// Name returns the serializer name.
-	//
-	// Return Guarantees:
-	//   - Returns unique, exposeable name identifier
-	//   - Format: lowercase letters + numbers + underscores, e.g. "json", "protobuf_v2"
-	//   - CAN be transmitted in metadata protocols
-	Name() string
-
-	// Priority returns the priority level for negotiation.
-	//
-	// Return Guarantees:
-	//   - Returns priority value 0-100
-	//   - Higher value means higher priority
-	//   - Used for ordering during negotiation
-	Priority() int
-}
-
-// SerializerModule is the interface for serializer module registration.
-// Each serializer implementation should provide a Module for registration.
-type SerializerModule interface {
-	// Create creates a serializer instance with optional configuration.
-	//
-	// Parameter Constraints:
-	//   - args: optional configuration, type defined by specific implementation
-	//
-	// Return Guarantees:
-	//   - On success: returns Serializer instance
-	//   - On failure: returns nil and error
-	Create(args interface{}) (Serializer, error)
-
-	// Name returns the module name (must match Serializer.Name() from Create)
-	Name() string
-}
 
 // SerializerRegistry manages registered serializers.
 type SerializerRegistry struct {

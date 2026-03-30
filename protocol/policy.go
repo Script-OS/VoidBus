@@ -1,14 +1,30 @@
-// Package voidbus provides negotiation policy for VoidBus handshake.
-package voidbus
+// Package protocol provides negotiation policy for VoidBus handshake.
+//
+// NegotiationPolicy controls security requirements and allowed algorithms:
+//   - DebugMode: WARNING: Should NEVER be enabled in release builds
+//   - MinSecurityLevel: Release MUST use SecurityLevelMedium or higher
+//   - AllowedSerializers: Whitelist of allowed serializers
+//   - PreferredCodecChainSecurity: Preferred security level for codec chain
+//
+// Security Design:
+//   - Release mode MUST reject plaintext codec
+//   - Challenge mechanism prevents degradation attacks
+//   - Session timeout prevents stale connections
+package protocol
 
 import (
+	"errors"
 	"time"
 
 	"VoidBus/codec"
 )
 
+// Policy errors
+var (
+	ErrInvalidPolicy = errors.New("policy: invalid configuration")
+)
+
 // NegotiationPolicy defines the security policy for handshake negotiation.
-// It controls security requirements and allowed algorithms.
 type NegotiationPolicy struct {
 	// DebugMode indicates whether debug mode is enabled.
 	// In debug mode, plaintext codec is allowed.

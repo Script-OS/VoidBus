@@ -1,5 +1,20 @@
-// Package voidbus provides packet structures for VoidBus communication.
-package voidbus
+// Package protocol provides packet structures for VoidBus communication.
+//
+// Packet format:
+//
+//	[header_length(4)][header][payload]
+//
+// Header fields:
+//   - SessionID: Random UUID, used as indirect reference to local config
+//   - SerializerType: CAN be exposed (serializer name only)
+//   - FragmentInfo: Fragmentation metadata (ID/Index/Total only, CAN be exposed)
+//   - PayloadChecksum: CRC32 checksum
+//   - Timestamp: For replay attack prevention
+//
+// Security Design:
+//   - CodecChain info NOT exposed (stored locally in SessionRegistry)
+//   - Channel info NOT exposed (stored locally in SessionRegistry)
+package protocol
 
 import (
 	"encoding/binary"
@@ -37,11 +52,6 @@ type Packet struct {
 }
 
 // PacketHeader contains packet metadata.
-// Security Design:
-// - SessionID: Random UUID, used as indirect reference to local config
-// - SerializerType: CAN be exposed (serializer name only)
-// - CodecChain info: NOT exposed (stored locally in SessionRegistry)
-// - Channel info: NOT exposed (stored locally in SessionRegistry)
 type PacketHeader struct {
 	// SessionID is session identifier (random UUID, no semantic info)
 	// Used as index into local SessionRegistry

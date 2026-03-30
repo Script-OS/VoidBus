@@ -1,5 +1,15 @@
-// Package voidbus provides session registry for managing session configurations.
-package voidbus
+// Package registry provides session registry for VoidBus.
+//
+// SessionRegistry manages session configurations locally.
+// Sessions are referenced by SessionID in packets, but the actual
+// configuration is NEVER transmitted over the network.
+//
+// Security Design:
+//   - CodecChain configuration NOT exposed
+//   - Channel configuration NOT exposed
+//   - KeyProvider info NOT exposed
+//   - Only SessionID is used as indirect reference in packets
+package registry
 
 import (
 	"errors"
@@ -59,8 +69,6 @@ type SessionConfig struct {
 }
 
 // SessionRegistry manages session configurations.
-// Sessions are referenced by SessionID in packets, but the actual
-// configuration is never transmitted over the network.
 type SessionRegistry interface {
 	// Register registers a new session.
 	Register(config SessionConfig) error
