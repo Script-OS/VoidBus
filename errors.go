@@ -126,4 +126,34 @@ var (
 
 	// Policy errors
 	ErrInvalidPolicy = errors.New("invalid policy configuration")
+
+	// === v2.0 新增错误类型 ===
+
+	// Codec 管理错误
+	ErrCodecNotFound      = errors.New("codec not found")
+	ErrCodecChainMismatch = errors.New("codec chain hash mismatch")
+	ErrCodecDepthExceeded = errors.New("codec depth exceeded")
+	ErrCodecCodeExists    = errors.New("codec code already exists")
+
+	// Channel Pool 错误
+	ErrNoHealthyChannel = errors.New("no healthy channel available")
+	ErrChannelPoolEmpty = errors.New("channel pool empty")
+	ErrChannelNotFound  = errors.New("channel not found in pool")
+
+	// Fragment v2.0 错误
+	ErrFragmentIncomplete  = errors.New("fragment incomplete")
+	ErrFragmentMismatch    = errors.New("fragment metadata mismatch")
+	ErrInvalidMetadata     = errors.New("invalid fragment metadata")
+	ErrAdaptiveSplitFailed = errors.New("adaptive split failed")
+
+	// Session 错误
+	ErrSessionNotFound        = errors.New("session not found")
+	ErrSessionExpired         = errors.New("session expired")
+	ErrSessionAlreadyComplete = errors.New("session already complete")
+	ErrRetransmitExceeded     = errors.New("retransmit count exceeded")
+
+	// 协商错误
+	ErrNegotiationFailed  = errors.New("negotiation failed")
+	ErrNoCommonCodec      = errors.New("no common codec codes")
+	ErrNegotiationTimeout = errors.New("negotiation timeout")
 )

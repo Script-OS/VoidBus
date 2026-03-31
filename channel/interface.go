@@ -70,6 +70,11 @@ type Channel interface {
 
 	// Type returns the channel type (NOT for transmission).
 	Type() ChannelType
+
+	// DefaultMTU returns the default Maximum Transmission Unit for this channel.
+	// Used for adaptive fragmentation in v2.0 architecture.
+	// Returns 0 if no specific MTU is known.
+	DefaultMTU() int
 }
 
 // ServerChannel extends Channel with server-side capabilities.

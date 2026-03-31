@@ -253,6 +253,12 @@ func (c *ClientChannel) Type() channel.ChannelType {
 	return ChannelType
 }
 
+// DefaultMTU implements channel.Channel.DefaultMTU.
+// TCP has no inherent MTU limit, but we use 64KB as a reasonable default.
+func (c *ClientChannel) DefaultMTU() int {
+	return 64 * 1024 // 64KB
+}
+
 // handleDisconnect handles connection disconnect.
 func (c *ClientChannel) handleDisconnect() {
 	c.mu.Lock()
@@ -399,6 +405,12 @@ func (s *ServerChannel) IsConnected() bool {
 // Type implements channel.Channel.Type.
 func (s *ServerChannel) Type() channel.ChannelType {
 	return ChannelType
+}
+
+// DefaultMTU implements channel.Channel.DefaultMTU.
+// TCP server channel does not have MTU, returns 0.
+func (s *ServerChannel) DefaultMTU() int {
+	return 0 // Server channel doesn't have MTU
 }
 
 // ListenAddress implements channel.ServerChannel.ListenAddress.
@@ -574,6 +586,12 @@ func (a *AcceptedChannel) IsConnected() bool {
 // Type implements channel.Channel.Type.
 func (a *AcceptedChannel) Type() channel.ChannelType {
 	return ChannelType
+}
+
+// DefaultMTU implements channel.Channel.DefaultMTU.
+// TCP has no inherent MTU limit, but we use 64KB as a reasonable default.
+func (a *AcceptedChannel) DefaultMTU() int {
+	return 64 * 1024 // 64KB
 }
 
 // handleDisconnect handles connection disconnect.

@@ -61,6 +61,7 @@ var (
 	ErrDecodingFailed     = errors.New("codec: decoding failed")
 	ErrCodecNotFound      = errors.New("codec: not found")
 	ErrCodecConflict      = errors.New("codec: codec conflict")
+	ErrCodecChainMismatch = errors.New("codec: chain hash mismatch")
 	// Note: ErrChainTooLong and ErrInvalidIndex are defined in chain.go
 )
 

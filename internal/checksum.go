@@ -33,3 +33,9 @@ func BytesToChecksum(data []byte) uint32 {
 	}
 	return uint32(data[0])<<24 | uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
 }
+
+// CalculateChecksum returns CRC32 checksum as uint32.
+// Alias for CalculateChecksum for clarity.
+func CalculateChecksumUint32(data []byte) uint32 {
+	return CalculateChecksum(data)
+}

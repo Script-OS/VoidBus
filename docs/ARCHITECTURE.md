@@ -2,748 +2,692 @@
 
 ## 1. 项目概述
 
-VoidBus是一个高度模块化、可组合的通信总线库，实现信道与序列化/编解码的完全分离，支持任意组合和更换。
+VoidBus 是一个高度模块化、可组合的通信总线库，实现隐蔽通信与多信道分发能力。
 
 ### 核心特性
-- **四层分离架构**：Serializer（序列化）+ Codec（编解码）+ Channel（信道）+ Fragment（分片）
-- **Codec链式组合**：支持多个Codec按顺序组合，如 AES → Base64
-- **可插拔架构**：所有模块通过build tags控制编译，仅编译需要的模块
-- **双向全双工通信**：Server侧可同时向多个客户端接收和发送信息
-- **分片多信道传输**：支持数据分片，通过不同信道/编码组合发送
-- **安全协商机制**：防止降级攻击，Release模式禁用plaintext
-- **灵活的密钥管理**：支持URL加载（预留）和embed嵌入两种密钥获取方式
+
+- **统一简洁的 API**：单一 Bus 入口，简单的 `New() → AddCodec → AddChannel → Send → Receive` 使用方式
+- **随机 Codec 链选择**：从能力池中随机选择 Codec 组合，通过 Hash 匹配解码
+- **自适应切片**：根据 Channel 承载能力自动调整切片大小
+- **多信道随机分发**：同一数据的不同切片可通过不同信道（TCP/UDP/DNS等）发送
+- **可靠传输**：Session 管理 + 分片重传机制
+- **能力协商**：初始连接时协商 Codec 代号集合
 
 ### 安全边界
+
 | 模块 | 可暴露性 | 说明 |
 |------|----------|------|
-| Serializer | ✅ 可暴露 | 序列化类型可出现在元数据协议中 |
-| Codec | ❌ 不可暴露 | 加密/编码方式不可暴露，仅通过SessionID间接引用 |
-| Channel | ❌ 不可暴露 | 信道类型不可暴露 |
-| KeyProvider | ❌ 不可暴露 | 密钥相关信息不可暴露 |
+| Codec 代号 | ✅ 协商时暴露 | 初始连接时交换支持的代号集合 |
+| Codec Hash | ✅ 可暴露 | SHA256(代号组合)，不暴露具体组合 |
+| Channel 类型 | ❌ 不可暴露 | 信道类型不暴露 |
+| 密钥 | ❌ 不可暴露 | 密钥相关信息不可暴露 |
 
-## 2. 架构约束
+---
 
-### 2.1 模块边界定义
+## 2. 架构全景图
 
-#### 2.1.1 Serializer（序列化模块）
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              VoidBus（统一入口）                              │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                              Core Bus                                    ││
+│  │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌─────────────┐  ││
+│  │  │ CodecManager  │ │  ChannelPool  │ │FragmentManager│ │ SessionMgr  │  ││
+│  │  │ (随机+Hash)   │ │ (MTU+健康度)  │ │ (自适应切片)  │ │ (生命周期)  │  ││
+│  │  └───────────────┘ └───────────────┘ └───────────────┘ └─────────────┘  ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+│                                        │                                    │
+│  ┌────────────────────────────────────┼────────────────────────────────────┐│
+│  │                            Protocol Layer                                ││
+│  │  ┌────────────┐ ┌──────────────┐ ┌───────────────┐ ┌──────────────────┐││
+│  │  │ Metadata   │ │ Negotiation  │ │  NAK Protocol │ │   END Protocol   │││
+│  │  │ (Header)   │ │ (能力协商)   │ │  (重传请求)   │ │   (结束确认)     │││
+│  │  └────────────┘ └──────────────┘ └───────────────┘ └──────────────────┘││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+│                                        │                                    │
+│  ┌────────────────────────────────────┼────────────────────────────────────┐│
+│  │                            Plugin Layer                                  ││
+│  │  ┌─────────────────────────────────┐ ┌─────────────────────────────────┐││
+│  │  │          Codec Pool             │ │         Channel Pool            │││
+│  │  │ ┌─────┐┌─────┐┌─────┐┌─────┐   │ │ ┌─────┐┌─────┐┌─────┐┌─────┐   │││
+│  │  │ │AES  ││B64  ││XOR  ││...  │   │ │ │TCP  ││UDP  ││DNS  ││ICMP │   │││
+│  │  │ │(A)  ││(B)  ││(X)  ││     │   │ │ │     ││     ││     ││     │   │││
+│  │  │ └─────┘└─────┘└─────┘└─────┘   │ │ └─────┘└─────┘└─────┘└─────┘   │││
+│  │  └─────────────────────────────────┘ └─────────────────────────────────┘││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. 核心设计决策
+
+### 3.1 架构简化
+
+| 特性 | 旧架构 | 新架构 |
+|------|--------|--------|
+| Bus 类型 | Bus + MultiBus 分离 | 统一单一 Bus |
+| Serializer | 必选模块 | **已取消** |
+| Codec 链 | 固定配置 | **随机选择** |
+| 切片大小 | 固定 MaxFragmentSize | **自适应** |
+| Metadata | 不暴露 Codec 信息 | **暴露链深+Hash** |
+| 多信道发送 | MultiBus 支持 | **内置随机分发** |
+| 重传机制 | 无 | **Session号+分片号重传** |
+| Buffer 管理 | 仅接收端 | **双端保留** |
+
+### 3.2 设计原则
+
+1. **简洁优先**：作为可被 import 的库，API 简单易懂
+2. **隐蔽性**：Codec Hash 而非明文传输，随机选择增加分析难度
+3. **可靠性**：分片重传、超时处理、健康度评估
+4. **灵活性**：用户自定义 Codec 代号、最大链深度、MTU 配置
+
+---
+
+## 4. 模块边界定义
+
+### 4.1 CodecManager（编解码管理器）
+
 **职责**：
-- 负责数据结构的序列化与反序列化
-- 提供序列化类型标识（可暴露）
+- 管理可用 Codec 实例池（代号 → Codec 映射）
+- 随机选择 Codec 链组合
+- 计算 Codec 链 Hash（SHA256(代号组合)）
+- 接收端通过 Hash 匹配解码链
 
 **不负责**：
-- 数据编码/加密
+- 数据序列化（已取消 Serializer）
 - 数据传输
 - 数据分片
 
-**接口契约**：
+**核心算法**：
+
 ```go
-type Serializer interface {
-    Serialize(data []byte) ([]byte, error)
-    Deserialize(data []byte) ([]byte, error)
-    Name() string      // 可暴露在元数据中
-    Priority() int     // 用于协商排序
+// 发送端：随机选择 Codec 链
+func (m *CodecManager) RandomSelect(depth int) ([]string, CodecChain)
+
+// Hash 计算
+func ComputeHash(codeChain []string) [32]byte {
+    concatenated := strings.Join(codeChain, "")
+    return sha256.Sum256([]byte(concatenated))
+}
+
+// 接收端：排列组合匹配
+func (m *CodecManager) MatchByHash(hash [32]byte, depth int, supportedCodes []string) ([]string, CodecChain, error) {
+    // 生成所有可能的代号排列组合
+    permutations := GeneratePermutations(supportedCodes, depth)
+    
+    // 对每个组合计算 Hash 并匹配
+    for _, combo := range permutations {
+        if ComputeHash(combo) == hash {
+            return combo, m.CreateChain(combo), nil
+        }
+    }
+    
+    return nil, nil, ErrCodecChainMismatch
 }
 ```
 
-#### 2.1.2 Codec（编解码模块）
+### 4.2 ChannelPool（信道池）
+
 **职责**：
-- 负责数据的编码/加密和解码/解密
-- 提供安全等级标识（用于协商，不暴露具体名称）
-- 支持密钥注入（通过KeyProvider）
+- 管理多个 Channel 实例
+- 提供每个 Channel 的 MTU 信息
+- 评估信道健康度（用于 NAK 选择）
+- 随机分发切片
 
-**不负责**：
-- 数据序列化
-- 数据传输
-- 密钥获取（由KeyProvider提供）
+**接口定义**：
 
-**接口契约**：
 ```go
-type Codec interface {
-    Encode(data []byte) ([]byte, error)
-    Decode(data []byte) ([]byte, error)
-    InternalID() string        // 内部标识，不可传输
-    SecurityLevel() SecurityLevel
+type ChannelInfo struct {
+    Channel      Channel
+    MTU          int           // 默认或用户配置
+    HealthScore  float64       // 0.0 ~ 1.0
+    SendCount    int64
+    ErrorCount   int64
+    LastActivity time.Time
 }
 
-type KeyAwareCodec interface {
-    Codec
-    SetKeyProvider(provider KeyProvider) error
-    RequiresKey() bool
-    KeyAlgorithm() string
-}
-
-// SecurityLevel 安全等级
-const (
-    SecurityLevelNone   = 0  // Plaintext（仅调试）
-    SecurityLevelLow    = 1  // Base64等
-    SecurityLevelMedium = 2  // AES-128
-    SecurityLevelHigh   = 3  // AES-256, RSA
-)
+// 核心方法
+func (p *ChannelPool) GetHealthyChannel() *ChannelInfo  // 用于 NAK
+func (p *ChannelPool) RandomSelect() *ChannelInfo       // 用于切片分发
+func (p *ChannelPool) GetAdaptiveMTU() int              // 建议切片大小
 ```
 
-#### 2.1.3 CodecChain（Codec链）
+**MTU 配置优先级**：
+```
+用户配置 > Channel.DefaultMTU() > 全局默认值(1024)
+```
+
+**健康度评估算法**：
+
+```go
+func (e *HealthEvaluator) Evaluate(info *ChannelInfo) float64 {
+    // 1. 计算错误率
+    errorRate := float64(info.ErrorCount) / float64(info.SendCount + 1)
+    errorScore := 1.0 - errorRate
+    
+    // 2. 计算延迟得分
+    latency := time.Since(info.LastActivity)
+    latencyScore := 1.0 - min(latency/timeout, 1.0)
+    
+    // 3. 综合得分
+    return errorScore*e.ErrorWeight + latencyScore*e.LatencyWeight
+}
+```
+
+### 4.3 FragmentManager（切片管理器）
+
 **职责**：
-- 支持多个Codec的链式组合
-- 管理Codec顺序
-- 计算整体安全等级（取最低值）
+- 自适应切片（根据 ChannelPool 的 MTU）
+- 切片元数据附加
+- 接收端重组管理
+- 缺失分片检测
 
-**处理顺序**：
-```
-Encode:  data → Codec[0].Encode → Codec[1].Encode → ... → output
-Decode:  data → Codec[n].Decode → ... → Codec[1].Decode → Codec[0].Decode → output
+**关键数据结构**：
+
+```go
+// 发送端缓存
+type SendBuffer struct {
+    SessionID    string
+    OriginalData []byte
+    Fragments    [][]byte
+    CodecChain   []string    // 记录选定的代号组合
+    CodecHash    [32]byte
+    SentTime     time.Time
+    Retransmit   int
+    Complete     bool
+}
+
+// 接收端缓存
+type RecvBuffer struct {
+    SessionID    string
+    Total        uint16
+    Received     map[uint16][]byte
+    Missing      []uint16
+    CodecDepth   uint8
+    CodecHash    [32]byte
+    StartTime    time.Time
+    Complete     bool
+}
 ```
 
-#### 2.1.4 Channel（信道模块）
+### 4.4 SessionManager（会话管理器）
+
 **职责**：
-- 负责底层传输层的建立和维护
-- 处理网络连接的生命周期
-- 提供数据的发送和接收接口
-- 支持心跳保活机制
+- Session 创建与销毁
+- Session 生命周期管理
+- 与 FragmentManager 协同管理 Buffer
 
-**不负责**：
-- 数据的序列化
-- 数据编码/加密
-- 数据分片
-- 密钥管理
+**生命周期**：
 
-**接口契约**：
+```
+Send(data)
+  │
+  ├─→ 创建 Session（UUID）
+  ├─→ 创建 SendBuffer（保留原始数据）
+  ├─→ 选择 Codec 链（随机，记录代号组合）
+  ├─→ 切片分发（多 Channel 随机发送）
+  │
+  │  (接收端处理)
+  │
+  ├─→ 接收分片
+  ├─→ 检测缺失 → 发送 NAK
+  ├─→ 重组解码
+  ├─→ 发送 END_ACK
+  │
+  └─→ 销毁 Session（发送端收到 END_ACK）
+      清理 Buffer
+```
+
+---
+
+## 5. 数据流详细设计
+
+### 5.1 发送流程
+
+```
+原始数据 ([]byte)
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Step 1: CodecManager.RandomSelect(depth)                     │
+│   - 从协商后的代号池随机选择 codec 组合                        │
+│   - 例如: ["A", "B"] 表示 AES → Base64                       │
+│   - 计算 hash = SHA256("AB")                                 │
+│   - 记录到 sessionChain[sessionID]                           │
+└──────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Step 2: CodecChain.Encode(data)                              │
+│   - data → Codec[A].Encode → Codec[B].Encode → encodedData  │
+└──────────────────────────────────────────────────────────────┘
+    │
+    ▼ encodedData
+    │
+┌──────────────────────────────────────────────────────────────┐
+│ Step 3: FragmentManager.AdaptiveSplit(encodedData)           │
+│   - 获取 ChannelPool 的建议 MTU                              │
+│   - 根据 MTU 切片: [frag0, frag1, frag2, ...]               │
+│   - 每个切片附加 Metadata Header                             │
+└──────────────────────────────────────────────────────────────┘
+    │
+    ▼ [fragments with headers]
+    │
+┌──────────────────────────────────────────────────────────────┐
+│ Step 4: ChannelPool.DistributeFragments(fragments)           │
+│   - 随机选择 Channel 发送每个切片                            │
+│   - frag0 → Channel[UDP]                                    │
+│   - frag1 → Channel[TCP]                                    │
+│   - frag2 → Channel[DNS]                                    │
+└──────────────────────────────────────────────────────────────┘
+    │
+    ▼ 各信道传输
+```
+
+### 5.2 接收流程
+
+```
+各信道接收数据
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Step 1: 提取 Metadata                                        │
+│   - 解析 Header: SessionID, FragmentIndex, CodecHash, etc.  │
+│   - 根据 SessionID 创建/更新 RecvBuffer                      │
+└──────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Step 2: 检测缺失分片                                          │
+│   - 检查 RecvBuffer[sessionID].Missing                      │
+│   - 如果有缺失 → 通过健康信道发送 NAK                         │
+│   - NAK 格式: {SessionID, MissingIndices: [3, 7]}           │
+└──────────────────────────────────────────────────────────────┘
+    │
+    ▼ (所有分片到达后)
+    │
+┌──────────────────────────────────────────────────────────────┐
+│ Step 3: CodecManager.MatchByHash(hash, depth)               │
+│   - 生成所有可能的代号排列组合                                │
+│   - 计算每个组合的 hash                                       │
+│   - 匹配接收到的 hash                                         │
+│   - 得到解码链代号组合: ["A", "B"]                           │
+└──────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Step 4: 重组 + 解码                                          │
+│   - 按 Index 顺序重组分片 → encodedData                      │
+│   - CodecChain.Decode(encodedData)                          │
+│   - encodedData → Codec[B].Decode → Codec[A].Decode → data  │
+└──────────────────────────────────────────────────────────────┘
+    │
+    ▼ 原始数据
+    │
+┌──────────────────────────────────────────────────────────────┐
+│ Step 5: 发送 END_ACK                                         │
+│   - 通过健康信道发送: {SessionID, Status: "COMPLETE"}        │
+└──────────────────────────────────────────────────────────────┘
+    │
+    ▼ 返回给用户 Receive()
+```
+
+---
+
+## 6. Metadata 协议设计
+
+### 6.1 分片 Header 结构
+
 ```go
-type Channel interface {
-    Send(data []byte) error
-    Receive() ([]byte, error)
-    Close() error
-    IsConnected() bool
-    Type() ChannelType    // 内部标识，不可传输
-}
-
-type ServerChannel interface {
-    Channel
-    Accept() (Channel, error)
-    ListenAddress() string
-}
-```
-
-#### 2.1.5 Fragment（分片模块）
-**职责**：
-- 负责大数据的分片和重组
-- 管理分片元数据（分片存在可暴露，细节不可暴露）
-- 支持分片完整性校验
-
-**不负责**：
-- 数据传输
-- 数据序列化
-- 数据编码/加密
-
-**接口契约**：
-```go
-type Fragment interface {
-    Split(data []byte, maxSize int) ([][]byte, error)
-    Reassemble(fragments [][]byte) ([]byte, error)
-    GetFragmentInfo(fragment []byte) (FragmentInfo, error)
-    SetFragmentInfo(data []byte, info FragmentInfo) ([]byte, error)
-}
-
-type FragmentInfo struct {
-    ID        string    // UUID，随机无语义，可暴露
-    Index     uint16    // 可暴露
-    Total     uint16    // 可暴露
-    Checksum  uint32
-    IsLast    bool
-}
-```
-
-#### 2.1.6 KeyProvider（密钥提供者模块）
-**职责**：
-- 提供密钥获取接口
-- 支持多种密钥来源（URL/Embedded）
-- 预留密钥刷新机制（架构兼容）
-
-**不负责**：
-- 使用密钥进行加解密
-- 密钥生成
-- 密钥存储安全
-
-**接口契约**：
-```go
-type KeyProvider interface {
-    GetKey() ([]byte, error)
-    RefreshKey() error              // 当前返回ErrNotImplemented
-    SupportsRefresh() bool          // 当前返回false，架构兼容
-    Type() KeyProviderType
-}
-```
-
-#### 2.1.7 Bus（总线核心）
-**职责**：
-- 组装和管理各个模块实例
-- 协调数据流在模块间的传递
-- 提供统一的使用接口
-- 管理双向通信
-
-**不负责**：
-- 具体的传输实现
-- 具体的序列化实现
-- 具体的编解码实现
-- 具体的分片逻辑
-
-#### 2.1.8 ServerBus（服务端总线）
-**职责**：
-- 监听并接受客户端连接
-- 管理多个客户端Bus实例
-- 执行安全协商（Handshake）
-- 防止降级攻击
-
-**不负责**：
-- 具体业务逻辑处理
-- 客户端配置选择
-
-#### 2.1.9 MultiBus（多信道总线）
-**职责**：
-- 管理多个Bus实例
-- 支持分片到信道的分配（随机/指定）
-- 聚合所有信道接收的消息
-
-**分配策略**：
-- 随机多信道分片：系统自动分配分片到不同信道
-- 用户指定单一信道：完整数据通过指定信道发送
-
-### 2.2 数据流定义
-
-#### 2.2.1 发送流程
-```
-原始数据
-  → Serializer.Serialize() → 序列化数据
-  → CodecChain.Encode() → 编码/加密数据
-  → [可选] Fragment.Split() → 分片数据
-  → Channel.Send() → 网络传输
-```
-
-#### 2.2.2 接收流程
-```
-Channel.Receive() → 原始网络数据
-  → [可选] Fragment.Reassemble() → 完整数据
-  → CodecChain.Decode() → 序列化数据
-  → Serializer.Deserialize() → 原始数据
-```
-
-### 2.3 模块依赖方向
-
-```
-┌─────────────────────────────────────────────┐
-│                  Bus                        │
-│    ┌─────────┬─────────┬─────────┬───────┐  │
-│    │Serializer│CodecChain│Channel │Fragment│ │
-│    └─────────┴────┬────┴────┬────┴───────┘  │
-│                   │         │               │
-│            KeyProvider      │               │
-│                             │               │
-│                    ServerChannel (可选)      │
-└─────────────────────────────────────────────┘
-
-依赖规则：
-- Serializer: 无依赖
-- Codec: 可选依赖KeyProvider
-- CodecChain: 组合多个Codec
-- Channel: 无依赖
-- Fragment: 无依赖
-- KeyProvider: 无依赖
-- Bus: 组合所有模块
-```
-
-### 2.4 元数据协议设计
-
-#### Packet结构
-```go
-type Packet struct {
-    Header  PacketHeader
-    Payload []byte
-}
-
-type PacketHeader struct {
-    SessionID         string    // UUID，间接引用Codec/Channel配置
-    FragmentInfo      FragmentInfo
-    SerializerType    string    // 可暴露
-    PayloadChecksum   uint32
-    Timestamp         int64     // 防重放
-    Version           uint8
+type FragmentMetadata struct {
+    // === 核心字段（必须） ===
+    SessionID     string    // UUID，标识本次发送
+    FragmentIndex uint16    // 分片序号（0-based）
+    FragmentTotal uint16    // 总分片数
+    
+    // === Codec 信息 ===
+    CodecDepth    uint8     // Codec 链深度（层数）
+    CodecHash     [32]byte  // SHA256(代号组合)
+    
+    // === 校验字段 ===
+    DataChecksum  uint32    // CRC32(分片数据)
+    
+    // === 时间戳（可选） ===
+    Timestamp     int64     // 发送时间，用于超时判断
+    
+    // === 标志位 ===
+    IsLast        bool      // 是否最后一个分片
 }
 ```
 
-#### 安全设计
-- **SessionID**: 随机UUID，不直接暴露配置，仅作为本地SessionRegistry的索引
-- **SerializerType**: 可暴露，用于双方协商
-- **Codec配置**: 仅存储在本地SessionRegistry中，不传输
-- **Channel类型**: 仅存储在本地，不传输
-
-### 2.5 安全协商机制
-
-#### Handshake流程
-```
-Client                          Server
-  │                               │
-  │── HandshakeRequest ──────────→│
-  │   (支持的Serializer列表)       │
-  │   (支持的CodecChain安全等级)   │
-  │   (MinSecurityLevel)          │
-  │                               │
-  │←── HandshakeResponse ─────────│
-  │   (SelectedSerializer)        │
-  │   (SelectedCodecChainInfo)    │
-  │   (SessionID)                 │
-  │   (ServerChallenge)           │
-  │                               │
-  │── HandshakeConfirm ──────────→│
-  │   (ChallengeResponse)         │
-  │                               │
-  │←── 连接建立                   │
-```
-
-#### 安全策略
-```go
-type NegotiationPolicy struct {
-    DebugMode           bool           // 调试模式允许plaintext
-    MinSecurityLevel    SecurityLevel  // Release>=Medium
-    RejectOnMismatch    bool           // 安全等级不匹配时拒绝
-    MaxCodecChainLength int            // 防止过长链
-}
-```
-
-### 2.6 编译时模块选择
-
-使用Go的build tags机制：
-
-```go
-// serializer/plain/plain.go
-//go:build plain_serializer
-
-// serializer/plain/plain_empty.go
-//go:build !plain_serializer
-```
-
-编译命令：
-```bash
-# TCP + AES-256 + JSON
-go build -tags "tcp_channel,aes_codec,json_serializer"
-
-# UDP + Base64 + Plain (调试)
-go build -tags "udp_channel,base64_codec,plain_serializer,debug_mode"
-
-# ICMP + RSA + Protobuf
-go build -tags "icmp_channel,rsa_codec,protobuf_serializer"
-```
-
-### 2.7 错误处理策略
-
-1. **Serializer层**：
-   - 序列化失败返回明确错误
-   - 无效数据返回ErrInvalidData
-
-2. **Codec层**：
-   - 密钥缺失返回ErrKeyRequired
-   - 无效密钥返回ErrInvalidKey
-   - 编解码失败返回具体原因
-
-3. **Channel层**：
-   - 网络错误返回error
-   - 连接状态通过IsConnected()标识
-   - 支持重连机制（由Bus配置控制）
-
-4. **Fragment层**：
-   - 分片丢失通过FragmentInfo标识
-   - 超时自动清理不完整分片组
-
-5. **Bus层**：
-   - 模块缺失返回ErrModuleNotSet
-   - 协商失败返回ErrHandshakeFailed
-   - 降级攻击返回ErrDegradationAttack
-
-### 2.8 版本兼容性要求
-
-1. **接口稳定性**：
-   - 核心接口保持向后兼容
-   - 新增功能通过接口扩展实现
-   - 废弃接口标记Deprecated并保留一个版本周期
-
-2. **密钥刷新兼容性**：
-   - RefreshKey当前返回ErrNotImplemented
-   - SupportsRefresh返回false
-   - 接口预留，未来实现无需改动架构
-
-## 3. 实现优先级
-
-### Phase 1: 核心框架
-1. 定义所有核心接口
-2. 实现SessionRegistry
-3. 实现Bus基础结构
-4. 实现基本的TCP Channel
-5. 实现Plain Serializer
-6. 实现CodecChain基础
-
-### Phase 2: 基础功能
-1. 实现UDP Channel
-2. 实现Base64 Codec
-3. 实现AES Codec（支持KeyProvider）
-4. 实现JSON Serializer
-5. 实现EmbeddedKeyProvider
-
-### Phase 3: 高级功能
-1. 实现ICMP Channel
-2. 实现RSA Codec
-3. 实现Fragment分片模块
-4. 实现FragmentManager
-5. 实现ServerBus + Handshake
-6. 实现MultiBus
-
-### Phase 4: 未来功能
-1. URL KeyProvider实现
-2. 密钥刷新/轮换机制
-3. Protobuf Serializer
-
-## 4. 使用示例
-
-### 4.1 基本客户端使用
-```go
-// 创建Codec链: AES-256 -> Base64
-codecChain := codec.NewChain().
-    AddCodec(aes.NewAES256GCM()).
-    AddCodec(base64.New())
-codecChain.SetKeyProvider(embedded.New(...))
-
-// 创建Bus
-bus := voidbus.NewBuilder().
-    UseSerializerInstance(json.New()).
-    UseCodecChain(codecChain).
-    UseChannel(tcp.NewClient("server:8080")).
-    WithConfig(voidbus.BusConfig{
-        AutoReconnect: true,
-    }).
-    OnMessage(func(data []byte) {
-        fmt.Println("Received:", string(data))
-    }).
-    Build()
-
-bus.Start()
-bus.Send([]byte("Hello, VoidBus!"))
-```
-
-### 4.2 服务端使用
-```go
-serverBus := voidbus.NewServerBus().
-    SetNegotiationPolicy(voidbus.DefaultNegotiationPolicy()).
-    SetSerializer(json.New()).
-    SetCodecChain(codec.NewChain().AddCodec(aes.NewAES256GCM())).
-    OnClientConnect(func(clientID string, bus *voidbus.ClientBus) {
-        fmt.Println("Client connected:", clientID)
-    }).
-    OnMessage(func(clientID string, data []byte) {
-        fmt.Println("From", clientID, ":", string(data))
-        serverBus.SendTo(clientID, []byte("ACK"))
-    })
-
-serverBus.Listen(":8080")
-serverBus.Start()
-```
-
-### 4.3 MultiBus分片多信道发送
-```go
-// 创建多个Bus
-tcpBus := voidbus.NewBuilder().
-    UseChannel(tcp.NewClient("server:8080")).
-    UseSerializer(json.New()).
-    UseCodecChain(codec.NewChain().AddCodec(aes.NewAES256GCM())).
-    Build()
-
-udpBus := voidbus.NewBuilder().
-    UseChannel(udp.NewClient("server:9090")).
-    UseSerializer(json.New()).
-    UseCodecChain(codec.NewChain().AddCodec(base64.New())).
-    Build()
-
-// 创建MultiBus
-multiBus := voidbus.NewMultiBus().
-    AddBus(tcpBus, 2, "primary").    // 权重2
-    AddBus(udpBus, 1, "backup").     // 权重1
-    SetDefaultStrategy(voidbus.SendStrategy{
-        Mode:           voidbus.ModeWeighted,
-        EnableFragment: true,
-        MaxFragmentSize: 1024,
-    }).
-    OnMessage(func(sourceBusID string, data []byte) {
-        fmt.Println("From", sourceBusID, ":", string(data))
-    })
-
-multiBus.Start()
-
-// 加权随机多信道发送（自动分片）
-multiBus.Send([]byte("Large data..."))
-
-// 指定单一信道发送
-multiBus.SendVia("primary", []byte("Important data"))
-```
-
-## 5. 目录结构
-
-```
-VoidBus/
-├── docs/
-│   ├── ARCHITECTURE.md          # 架构设计文档
-│   └── INTERFACE.md             # 接口详细说明
-│
-├── core/                        # 核心组装层
-│   ├── interfaces.go            # Bus/ServerBus/MultiBus接口定义
-│   ├── bus.go                   # Bus核心实现
-│   ├── serverbus.go             # ServerBus实现（服务端Hall模式）
-│   ├── multibus.go              # MultiBus实现（多信道组合）
-│   └── README.md                # 模块文档
-│
-├── protocol/                    # 协议层
-│   ├── packet.go                # Packet/Header结构
-│   ├── handshake.go             # Handshake协议实现
-│   ├── message.go               # Message结构定义
-│   ├── policy.go                # NegotiationPolicy定义
-│   └── README.md                # 模块文档
-│
-├── registry/                    # 注册表
-│   ├── registry.go              # SessionRegistry实现
-│   └── README.md                # 模块文档
-│
-├── errors.go                    # 全局错误定义
-│
-├── serializer/                  # 序列化器模块 [可暴露]
-│   ├── interface.go             # Serializer接口定义
-│   ├── serializer.go            # SerializerRegistry
-│   ├── plain/                   # Pass-through实现
-│   │   └── plain.go
-│   └── README.md                # 模块文档
-│
-├── codec/                       # 编码/加密模块 [不可暴露]
-│   ├── interface.go             # Codec接口定义
-│   ├── codec.go                 # CodecRegistry
-│   ├── chain.go                 # CodecChain实现
-│   ├── plain/                   # Pass-through（仅调试）
-│   │   └── plain.go
-│   ├── base64/                  # Base64编码
-│   │   └── base64.go
-│   ├── aes/                     # AES-GCM加密
-│   │   └── aes.go
-│   └── README.md                # 模块文档
-│
-├── channel/                     # 信道模块 [不可暴露]
-│   ├── interface.go             # Channel接口定义
-│   ├── channel.go               # ChannelRegistry
-│   ├── tcp/                     # TCP传输实现
-│   │   └── tcp.go
-│   └── README.md                # 模块文档
-│
-├── fragment/                    # 分片模块 [部分可暴露]
-│   ├── fragment.go              # Fragment接口 + FragmentManager
-│   └── README.md                # 模块文档
-│
-├── keyprovider/                 # 密钥提供者 [不可暴露]
-│   ├── keyprovider.go           # KeyProvider接口定义
-│   ├── embedded/                # 编译时嵌入密钥
-│   │   └── embedded.go
-│   └── README.md                # 模块文档
-│
-├── internal/                    # 内部工具（不对外暴露）
-│   ├── id.go                    # ID生成（UUID/SessionID）
-│   ├── checksum.go              # CRC32校验
-│   ├── crypto.go                # Challenge验证
-│   └── README.md                # 包约束说明
-│
-└── README.md                    # 项目说明
-```
-
-## 6. 质量保证
-
-### 6.1 测试策略
-- 每个模块独立单元测试
-- 集成测试验证模块组合
-- Handshake安全测试验证协商机制
-- 降级攻击测试验证安全策略
-- 压力测试验证性能
-- 混沌测试验证错误处理
-
-### 6.2 代码规范
-- 遵循Go标准代码规范
-- 使用golangci-lint进行静态检查
-- 接口注释完整
-- 示例代码可运行
-
-### 6.3 安全规范
-- Release模式禁用plaintext Codec
-- 协商过程验证客户端能力（Challenge）
-- 元数据不暴露敏感配置
-- 防重放攻击（Timestamp检查）
-
-### 6.4 性能要求
-- Serializer层：序列化延迟<5ms (1MB数据)
-- Codec层：编解码延迟<10ms (1MB数据)
-- CodecChain层：链式处理延迟累加
-- Channel层：支持至少1Gbps吞吐量
-- Fragment层：分片/重组延迟<5ms
-- Bus层：组装和路由延迟<1ms
-
-## 7. 实现状态与审查记录
-
-### 7.1 已实现模块清单
-
-| 模块 | 文件 | 状态 | 说明 |
-|------|------|------|------|
-| **Protocol** | | | |
-| session.go | Session状态管理 | ✅ 完成 | Handshaking/Active/Idle/Closing/Closed |
-| control.go | 控制消息 | ✅ 完成 | ACK/NACK/Heartbeat/Ping/Pong |
-| selector.go | 信道选择接口 | ✅ 完成 | ChannelSelectInfo避免循环依赖 |
-| distributor.go | 分片分发策略 | ✅ 完成 | 5种策略实现 |
-| transport.go | 传输层 | ✅ 完成 | TransportSender/TransportReceiver |
-| negotiator.go | 协商流程 | ✅ 完成 | Client/Server Negotiator |
-| handshake.go | Handshake消息 | ✅ 完成 | 序列化方法 |
-| packet.go | Packet结构 | ✅ 完成 | Header/Payload |
-| policy.go | 协商策略 | ✅ 完成 | NegotiationPolicy |
-| message.go | 消息抽象 | ✅ 完成 | Message/FragmentMetadata |
-| **Codec** | | | |
-| interface.go | Codec接口 | ✅ 完成 | Codec/KeyAwareCodec |
-| chain.go | CodecChain | ✅ 完成 | 链式组合 |
-| negotiation.go | Codec协商 | ✅ 完成 | CodecChainInfoGenerator |
-| plain/plain.go | Plaintext | ✅ 完成 | 仅调试用 |
-| base64/base64.go | Base64 | ✅ 完成 | Low SecurityLevel |
-| aes/aes.go | AES-GCM | ✅ 完成 | Medium/High SecurityLevel |
-| **Channel** | | | |
-| interface.go | Channel接口 | ✅ 完成 | Channel/ServerChannel |
-| channel.go | ChannelRegistry | ✅ 完成 | 模块注册 |
-| tcp/tcp.go | TCP实现 | ✅ 完成 | 客户端/服务端 |
-| selector/selector.go | 选择器实现 | ✅ 完成 | Random/RoundRobin/Weighted/HealthAware |
-| **Registry** | | | |
-| registry.go | SessionRegistry | ✅ 完成 | Session配置存储 |
-| **Core** | | | |
-| bus.go | Bus实现 | ✅ 完成 | 单信道总线 |
-| serverbus.go | ServerBus | ✅ 完成 | 服务端总线+Handshake |
-| multibus.go | MultiBus | ✅ 完成 | 多信道总线+Selector/Distributor |
-| interfaces.go | 核心接口 | ✅ 完成 | Bus/ServerBus/MultiBus |
-
-### 7.2 安全约束符合情况
-
-| 约束项 | 状态 | 验证点 |
-|--------|------|--------|
-| Codec名称不暴露 | ✅ 通过 | CodecChainInfo仅含SecurityLevel+Hash |
-| Channel类型不暴露 | ✅ 通过 | Type()仅用于内部标识 |
-| KeyProvider信息不暴露 | ✅ 通过 | 接口不含KeyProvider返回 |
-| SerializerType可暴露 | ✅ 通过 | Header.SerializerType用于协商 |
-| SessionID可暴露 | ✅ 通过 | 作为间接引用，配置存储本地 |
-| Challenge防降级攻击 | ✅ 通过 | ServerChallenge生成+验证 |
-| Release最小SecurityLevel | ✅ 通过 | DefaultPolicy=Medium |
-| Timestamp防重放 | ✅ 通过 | Packet.Timestamp+5分钟过期检查 |
-
-### 7.3 已修复问题
-
-| 问题 | 文件 | 修复内容 |
-|------|------|----------|
-| computeChainHash返回随机ID | negotiator.go | 使用SHA-256确定性哈希 |
-| distributor rand.Seed废弃 | distributor.go | 移除Go 1.20+废弃代码 |
-
-### 7.4 已知限制与待决策项
-
-| 问题 | 影响 | 建议 |
-|------|------|------|
-| AddCodec超限静默返回 | 流式API设计 | 可添加AddCodecWithErr方法返回错误 |
-| simpleChallengeResponse演示实现 | 中等安全 | 生产环境应使用CodecChain编码Challenge |
-| Clone浅拷贝 | 低 | Codec实例共享，或标注浅拷贝语义 |
-| Session错误计数RLock修改 | 低 | 使用atomic操作或改用Lock |
-| Policy Validate()值类型 | 低 | 改为指针接收者 |
-
-### 7.5 模块依赖图
+### 6.2 二进制编码格式
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                          Core Layer                              │
-│  ┌─────────┐  ┌─────────────┐  ┌───────────────┐                │
-│  │ bus.go  │  │ serverbus.go│  │ multibus.go   │                │
-│  └────┬────┘  └──────┬──────┘  └───────┬───────┘                │
-└───────┼──────────────┼─────────────────┼────────────────────────┘
-        │              │                 │
-        ▼              ▼                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        Protocol Layer                            │
-│  ┌────────────┐ ┌──────────┐ ┌─────────┐ ┌───────────────┐      │
-│  │ handshake  │ │ negotiator│ │ session │ │ transport     │      │
-│  └────────────┘ └──────────┘ └────┬────┘ └───────────────┘      │
-│  ┌────────────┐ ┌──────────┐     │     ┌───────────────┐        │
-│  │ packet     │ │ selector │     │     │ distributor   │        │
-│  └────────────┘ └──────────┘     │     └───────────────┘        │
-└─────────────────────────────────┼───────────────────────────────┘
-                                  │
-        ┌─────────────────────────┼─────────────────────────────┐
-        │                         │                              │
-        ▼                         ▼                              ▼
-┌───────────────┐     ┌───────────────────┐     ┌───────────────────┐
-│  Serializer   │     │      Codec        │     │     Channel       │
-│ ┌───────────┐ │     │ ┌───────────────┐ │     │ ┌───────────────┐ │
-│ │ plain     │ │     │ │ chain.go      │ │     │ │ tcp/tcp.go   │ │
-│ │ json      │ │     │ │ negotiation.go│ │     │ │ selector/    │ │
-│ └───────────┘ │     │ │ plain/        │ │     │ └───────────────┘ │
-│               │     │ │ base64/       │ │     │                   │
-│               │     │ │ aes/          │ │     │                   │
-│               │     │ └───────────────┘ │     │                   │
-└───────────────┘     └───────────────────┘     └───────────────────┘
-        │                     │
-        │                     ▼
-        │           ┌───────────────────┐
-        │           │   KeyProvider     │
-        │           │ ┌───────────────┐ │
-        │           │ │ embedded/     │ │
-        │           │ └───────────────┘ │
-        │           └───────────────────┘
-        │
-        ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        Registry Layer                            │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │                    registry.go                             │   │
-│  └──────────────────────────────────────────────────────────┘   │
+│                    Fragment Packet 格式                          │
+├─────────────────────────────────────────────────────────────────┤
+│ [HeaderLen:4][Header][Data]                                     │
+│                                                                  │
+│ Header:                                                          │
+│ ┌─────────────────────────────────────────────────────────────┐│
+│ │ [Version:1]                                                   ││
+│ │ [CodecDepth:1]                                                ││
+│ │ [Flags:1]         (IsLast等标志位)                            ││
+│ │ [FragmentIndex:2]                                             ││
+│ │ [FragmentTotal:2]                                             ││
+│ │ [Timestamp:8]                                                 ││
+│ │ [DataChecksum:4]                                              ││
+│ │ [SessionIDLen:2][SessionID:变长]                              ││
+│ │ [CodecHash:32]     (固定32字节SHA256)                         ││
+│ └─────────────────────────────────────────────────────────────┘│
+│                                                                  │
+│ Data:                                                            │
+│ ┌─────────────────────────────────────────────────────────────┐│
+│ │ [分片数据，大小自适应于Channel MTU]                           ││
+│ └─────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.6 数据流验证
+### 6.3 NAK 消息格式
 
-#### 发送流程
-```
-原始数据
-  → Serializer.Serialize()     [serializer/]
-  → CodecChain.Encode()        [codec/chain.go]
-    → Codec[0].Encode → Codec[1].Encode → ... → Codec[n].Encode
-  → Fragment.Split() [可选]    [fragment/]
-  → Packet.Wrap()              [protocol/packet.go]
-  → ChannelSelector.Select()   [protocol/selector.go]
-  → Channel.Send()             [channel/]
+```go
+type NAKMessage struct {
+    SessionID      string
+    MissingIndices []uint16    // 缺失的分片索引列表
+    Timestamp      int64
+}
 ```
 
-#### 接收流程
-```
-Channel.Receive()             [channel/]
-  → Packet.Decode()           [protocol/packet.go]
-  → Fragment.Reassemble() [可选] [fragment/]
-  → CodecChain.Decode()       [codec/chain.go]
-    → Codec[n].Decode → ... → Codec[1].Decode → Codec[0].Decode
-  → Serializer.Deserialize()  [serializer/]
-  → 原始数据
+### 6.4 END_ACK 消息格式
+
+```go
+type EndAckMessage struct {
+    SessionID  string
+    Status     string    // "COMPLETE"
+    Timestamp  int64
+}
 ```
 
-#### Handshake流程
+---
+
+## 7. 能力协商协议
+
+### 7.1 协商流程
+
 ```
-Client                          Server
-  │                               │
-  │── HandshakeRequest ──────────→│
-  │   (SerializerInfo列表)         │ [protocol/handshake.go]
-  │   (CodecChainInfo列表)         │ [codec/negotiation.go]
-  │                               │
-  │←── HandshakeResponse ─────────│
-  │   (SelectedSerializer)        │
-  │   (SelectedCodecChainInfo)    │
-  │   (SessionID)                 │
-  │   (ServerChallenge)           │
-  │                               │
-  │── HandshakeConfirm ──────────→│
-  │   (ChallengeResponse)         │ [使用CodecChain编码验证]
-  │                               │
-  │←── SessionEstablished ────────│
+    Client                              Server
+      │                                    │
+      │─── NegotiationRequest ────────────→│
+      │    {SupportedCodes: ["A","B","X"]} │
+      │    {MaxDepth: 2}                   │
+      │                                    │
+      │←── NegotiationResponse ───────────│
+      │    {Accepted: true}                │
+      │    {SupportedCodes: ["A","B"]}     │  ← 确定共同支持的代号
+      │    {MaxDepth: 2}                   │
+      │                                    │
 ```
+
+### 7.2 协商数据结构
+
+```go
+type NegotiationRequest struct {
+    ClientID       string
+    SupportedCodes []string    // 支持的 Codec 代号列表
+    MaxDepth       int         // 支持的最大链深度
+    Timestamp      int64
+}
+
+type NegotiationResponse struct {
+    Accepted       bool
+    RejectReason   string
+    SupportedCodes []string    // 双方共同支持的代号
+    MaxDepth       int         // 协商后的最大深度
+    Timestamp      int64
+}
+```
+
+---
+
+## 8. 用户 API 设计
+
+### 8.1 核心 API
+
+```go
+// === 创建与配置 ===
+bus := voidbus.New()
+
+// 添加 Codec（用户自定义代号）
+bus.AddCodec(aes.NewAES256GCM(), "A")       // 代号 "A" = AES
+bus.AddCodec(base64.New(), "B")              // 代号 "B" = Base64
+bus.AddCodec(xor.New(), "X")                 // 代号 "X" = XOR
+
+// 配置密钥（Codec 需要时）
+bus.SetKey([]byte("secret-key-32bytes"))
+
+// 配置最大链深度
+bus.SetMaxCodecDepth(2)                      // 最多 2 层 Codec
+
+// 添加 Channel
+bus.AddChannel(tcp.NewClient("server:8080"))
+bus.AddChannel(dns.NewClient("dns.server"))  // DNS 低 MTU 示例
+
+// 配置 MTU（可选覆盖）
+bus.SetChannelMTU("dns", 60)                 // DNS 隐蔽信道建议小 MTU
+
+// === 连接与协商 ===
+bus.Connect("remote-address")                // 执行能力协商
+
+// === 发送 ===
+bus.Send([]byte("hello world"))              // 创建 Session1，自动切片+编码+分发
+bus.Send([]byte("another data"))             // 创建 Session2，并行处理
+
+// === 接收 ===
+// 模式一：阻塞式（默认）
+data, err := bus.Receive()                   // 阻塞直到收到完整消息
+
+// 模式二：回调式
+bus.OnMessage(func(data []byte) {
+    fmt.Println("Received:", string(data))
+})
+bus.StartReceive()                           // 启动后台接收循环
+
+// === 生命周期 ===
+bus.Close()                                  // 关闭所有 Channel，清理资源
+```
+
+### 8.2 配置结构
+
+```go
+type BusConfig struct {
+    MaxCodecDepth     int           // 最大链深度（用户配置）
+    DefaultTimeout    time.Duration // 默认超时
+    MaxRetransmit     int           // 最大重传次数
+    ReceiveMode       ReceiveMode   // 阻塞/回调
+    MinMTU            int           // 最小 MTU
+    MaxMTU            int           // 最大 MTU
+}
+
+type ReceiveMode int
+
+const (
+    ReceiveModeBlocking ReceiveMode = iota  // 阻塞式（默认）
+    ReceiveModeCallback                       // 回调式
+)
+```
+
+---
+
+## 9. 目录结构
+
+```
+VoidBus/
+├── bus.go                    # 核心 Bus 实现（统一入口）
+├── config.go                 # BusConfig 配置结构
+├── errors.go                 # 全局错误定义
+│
+├── codec/                    # 编解码模块
+│   ├── manager.go            # CodecManager（随机选择+Hash匹配）
+│   ├── chain.go              # CodecChain（链式编解码）
+│   ├── interface.go          # Codec 接口定义
+│   ├── registry.go           # Codec 注册表（代号→Codec）
+│   ├── aes/                  # AES 实现
+│   ├── base64/               # Base64 实现
+│   └── xor/                  # XOR 实现
+│
+├── channel/                  # 信道模块
+│   ├── pool.go               # ChannelPool（MTU+健康度）
+│   ├── interface.go          # Channel 接口（含 DefaultMTU()）
+│   ├── health.go             # HealthEvaluator 实现
+│   ├── tcp/                  # TCP Channel
+│   ├── udp/                  # UDP Channel
+│   └── dns/                  # DNS Channel（低MTU示例）
+│
+├── fragment/                 # 切片模块
+│   ├── manager.go            # FragmentManager（自适应切片+重组）
+│   ├── buffer.go             # SendBuffer/RecvBuffer 定义
+│   └── metadata.go           # FragmentMetadata 结构
+│
+├── session/                  # 会话模块
+│   ├── manager.go            # SessionManager（生命周期）
+│   ├── session.go            # Session 结构定义
+│
+├── protocol/                 # 协议层
+│   ├── negotiation.go        # 能力协商协议
+│   ├── packet.go             # 分片 Packet 编解码
+│   ├── nak.go                # NAK 消息定义
+│   ├── end.go                # END_ACK 消息定义
+│   └── header.go             # Header 编解码
+│
+├── internal/                 # 内部工具
+│   ├── hash.go               # Hash 计算（SHA256）
+│   ├── id.go                 # UUID 生成
+│   ├── checksum.go           # CRC32 校验
+│   ├── timer.go              # 自适应超时
+│   └── permutation.go        # 排列组合生成器
+│
+└── examples/                 # 使用示例
+    ├── basic.go              # 基础使用示例
+    ├── dns_channel.go        # DNS 隐蔽信道示例
+    └── multi_codec.go        # 多 Codec 组合示例
+```
+
+---
+
+## 10. 实现优先级
+
+### Phase 1: 核心框架（必须最先）
+1. `errors.go` - 全局错误定义
+2. `config.go` - BusConfig 结构
+3. `internal/hash.go` - Hash 计算
+4. `internal/id.go` - UUID/SessionID 生成
+5. `internal/checksum.go` - CRC32 校验
+6. `internal/permutation.go` - 排列组合生成器
+
+### Phase 2: 协议层
+1. `protocol/header.go` - Header 编解码
+2. `protocol/metadata.go` - FragmentMetadata 结构
+3. `protocol/packet.go` - Packet 编解码
+4. `protocol/nak.go` - NAK 消息
+5. `protocol/end.go` - END_ACK 消息
+6. `protocol/negotiation.go` - 能力协商协议
+
+### Phase 3: Codec 模块
+1. `codec/interface.go` - Codec 接口定义
+2. `codec/chain.go` - CodecChain 实现
+3. `codec/registry.go` - Codec 注册表
+4. `codec/manager.go` - CodecManager（核心：随机选择+Hash匹配）
+5. `codec/plain/plain.go` - Plain Codec（调试用）
+6. `codec/aes/aes.go` - AES-GCM Codec
+7. `codec/base64/base64.go` - Base64 Codec
+
+### Phase 4: Channel 模块
+1. `channel/interface.go` - Channel 接口（含 DefaultMTU）
+2. `channel/pool.go` - ChannelPool 实现
+3. `channel/health.go` - HealthEvaluator
+4. `channel/tcp/tcp.go` - TCP Channel
+
+### Phase 5: Fragment 模块
+1. `fragment/metadata.go` - FragmentMetadata
+2. `fragment/buffer.go` - SendBuffer/RecvBuffer
+3. `fragment/splitter.go` - 切片算法
+4. `fragment/manager.go` - FragmentManager
+
+### Phase 6: Session 模块
+1. `session/session.go` - Session 结构
+2. `session/manager.go` - SessionManager
+
+### Phase 7: 核心 Bus
+1. `bus.go` - Bus 核心实现（整合所有模块）
+
+### Phase 8: 示例与测试
+1. `examples/basic.go` - 基础使用示例
+2. 单元测试
+3. 集成测试
+
+---
+
+## 11. 质量保证
+
+### 11.1 测试策略
+- 每个模块独立单元测试
+- 排列组合匹配算法测试
+- 多信道分发测试
+- 重传机制测试
+- 健康度评估测试
+- 压力测试验证性能
+
+### 11.2 代码规范
+- 遵循 Go 标准代码规范
+- 使用 golangci-lint 进行静态检查
+- 接口注释完整
+- 示例代码可运行
+
+### 11.3 性能要求
+- Codec 层：编解码延迟 <10ms (1MB 数据)
+- Channel 层：支持至少 1Gbps 吞吐量
+- Fragment 层：分片/重组延迟 <5ms
+- Hash 匹配：depth=3 时排列组合数 ≤ n³，需优化
+
+---
+
+## 12. 变更历史
+
+### v2.0.0 (当前版本) - 架构重构
+
+**重大变更**：
+- 取消 Serializer 模块
+- 取消 Bus/MultiBus 分离，统一为单一 Bus
+- 新增 Codec 随机选择 + Hash 匹配机制
+- 新增自适应切片（基于 Channel MTU）
+- 新增多信道随机分发
+- 新增分片重传机制（NAK）
+- 新增 Session 生命周期管理
+- 新增能力协商协议
+
+**迁移指南**：
+
+```go
+// 旧 API (v1.x)
+bus := core.NewBuilder().
+    UseSerializerInstance(json.New()).
+    UseCodecChain(codecChain).
+    UseChannel(tcp.NewClient("server:8080")).
+    Build()
+
+// 新 API (v2.0)
+bus := voidbus.New()
+bus.AddCodec(aes.New(), "A")
+bus.AddCodec(base64.New(), "B")
+bus.SetMaxCodecDepth(2)
+bus.AddChannel(tcp.NewClient("server:8080"))
+bus.Connect("remote-address")
+```
+
+### v1.0.0 - 初始版本
+
+- 四层分离架构：Serializer + Codec + Channel + Fragment
+- Codec 链式组合
+- Bus / ServerBus / MultiBus 三种模式
+- 安全协商机制

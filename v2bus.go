@@ -1,0 +1,721 @@
+// Package voidbus provides the unified Bus for VoidBus v2.0.
+package voidbus
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/Script-OS/VoidBus/channel"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/fragment"
+	"github.com/Script-OS/VoidBus/internal"
+	"github.com/Script-OS/VoidBus/keyprovider/embedded"
+	"github.com/Script-OS/VoidBus/protocol"
+	"github.com/Script-OS/VoidBus/session"
+)
+
+// V2Bus is the unified entry point for VoidBus v2.0.
+type V2Bus struct {
+	mu     sync.RWMutex
+	config *BusConfig
+
+	// Managers
+	codecManager  *codec.CodecManager
+	channelPool   *channel.ChannelPool
+	fragmentMgr   *fragment.V2FragmentManager
+	sessionMgr    *session.SessionManager
+	adaptiveTimer *internal.AdaptiveTimeout
+
+	// Key provider
+	keyProvider *embedded.Provider
+
+	// State
+	connected   bool
+	negotiated  bool
+	negotiation *NegotiationConfig
+	running     bool
+	stopChan    chan struct{}
+
+	// Receive
+	recvQueue      chan []byte
+	messageHandler func([]byte)
+	errorHandler   func(error)
+
+	// Channel ID counter
+	channelIDCounter int
+}
+
+// New creates a new V2Bus instance.
+func New() *V2Bus {
+	config := DefaultBusConfig()
+	return NewWithConfig(config)
+}
+
+// NewWithConfig creates a new V2Bus with custom config.
+func NewWithConfig(config *BusConfig) *V2Bus {
+	codecMgr := codec.NewCodecManager()
+	channelPool := channel.NewChannelPool()
+	fragmentMgr := fragment.NewV2FragmentManager(fragment.DefaultV2FragmentConfig())
+	sessionMgr := session.NewSessionManager(session.DefaultSessionManagerConfig())
+	adaptiveTimer := internal.NewAdaptiveTimeout(
+		1*time.Second,
+		30*time.Second,
+	)
+
+	return &V2Bus{
+		config:        config,
+		codecManager:  codecMgr,
+		channelPool:   channelPool,
+		fragmentMgr:   fragmentMgr,
+		sessionMgr:    sessionMgr,
+		adaptiveTimer: adaptiveTimer,
+		recvQueue:     make(chan []byte, config.RecvBufferSize),
+		stopChan:      make(chan struct{}),
+	}
+}
+
+// === Codec Configuration ===
+
+// AddCodec adds a codec with user-defined code.
+func (b *V2Bus) AddCodec(c codec.Codec, code string) error {
+	if err := b.codecManager.AddCodec(c, code); err != nil {
+		return WrapModuleError("AddCodec", "codec", err)
+	}
+
+	// Set key provider if codec needs it
+	if kc, ok := c.(codec.KeyAwareCodec); ok && b.keyProvider != nil {
+		kc.SetKeyProvider(b.keyProvider)
+	}
+
+	return nil
+}
+
+// SetKey sets the key provider with embedded key.
+func (b *V2Bus) SetKey(key []byte) {
+	provider, err := embedded.New(key, "", "AES-256-GCM")
+	if err != nil {
+		return
+	}
+	b.keyProvider = provider
+}
+
+// SetKeyProvider sets a custom key provider.
+func (b *V2Bus) SetKeyProvider(provider *embedded.Provider) {
+	b.keyProvider = provider
+}
+
+// SetMaxCodecDepth sets the maximum codec chain depth.
+func (b *V2Bus) SetMaxCodecDepth(depth int) error {
+	return b.codecManager.SetMaxDepth(depth)
+}
+
+// === Channel Configuration ===
+
+// AddChannel adds a channel to the pool with auto-generated ID.
+func (b *V2Bus) AddChannel(c channel.Channel) error {
+	b.channelIDCounter++
+	id := string(c.Type()) + "-" + internal.GenerateShortID()
+	return b.AddChannelWithID(c, id)
+}
+
+// AddChannelWithID adds a channel with specified ID.
+func (b *V2Bus) AddChannelWithID(c channel.Channel, id string) error {
+	if err := b.channelPool.AddChannel(c, id); err != nil {
+		return WrapModuleError("AddChannel", "channel", err)
+	}
+	return nil
+}
+
+// SetChannelMTU overrides MTU for a specific channel.
+func (b *V2Bus) SetChannelMTU(channelID string, mtu int) error {
+	return b.channelPool.SetMTUOverride(channelID, mtu)
+}
+
+// === Connection & Negotiation ===
+
+// Connect connects to remote.
+func (b *V2Bus) Connect(remoteAddr string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.connected {
+		return ErrBusAlreadyRunning
+	}
+
+	b.connected = true
+	return nil
+}
+
+// Negotiate performs capability negotiation with remote.
+func (b *V2Bus) Negotiate(remoteCodes []string, remoteMaxDepth int, salt []byte) (*NegotiationConfig, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Perform negotiation
+	commonCodes, err := b.codecManager.Negotiate(remoteCodes, remoteMaxDepth, salt)
+	if err != nil {
+		return nil, WrapModuleError("Negotiate", "codec", err)
+	}
+
+	maxDepth := b.codecManager.GetMaxDepth()
+
+	b.negotiated = true
+	b.negotiation = &NegotiationConfig{
+		SupportedCodes: commonCodes,
+		MaxDepth:       maxDepth,
+		NegotiatedAt:   time.Now(),
+	}
+
+	return b.negotiation, nil
+}
+
+// GetNegotiationInfo returns negotiation info for sending to remote.
+func (b *V2Bus) GetNegotiationInfo() ([]string, int) {
+	return b.codecManager.GetSupportedCodes(), b.codecManager.GetMaxDepth()
+}
+
+// === Sending ===
+
+// Send sends data through the bus.
+func (b *V2Bus) Send(data []byte) error {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if !b.connected {
+		return ErrChannelNotReady
+	}
+
+	if !b.negotiated {
+		return ErrNegotiationFailed
+	}
+
+	// 1. Randomly select codec chain
+	codes, chain, err := b.codecManager.RandomSelect()
+	if err != nil {
+		return WrapModuleError("RandomSelect", "codec", err)
+	}
+
+	// 2. Compute codec hash
+	codecHash := b.codecManager.ComputeHash(codes)
+
+	// 3. Compute data hash
+	dataHash := internal.ComputeDataHash(data)
+
+	// 4. Create session
+	sess := b.sessionMgr.CreateSendSession(codes, codecHash, len(codes), dataHash)
+
+	// 5. Encode data
+	encodedData, err := chain.Encode(data)
+	if err != nil {
+		b.sessionMgr.RemoveSendSession(sess.ID)
+		return WrapModuleError("Encode", "codec", err)
+	}
+
+	// 6. Get adaptive MTU
+	mtu := b.channelPool.GetAdaptiveMTU()
+	if mtu == 0 {
+		mtu = b.config.DefaultMTU
+	}
+
+	// 7. Adaptive split
+	fragments, checksums, err := b.fragmentMgr.AdaptiveSplit(encodedData, mtu)
+	if err != nil {
+		b.sessionMgr.RemoveSendSession(sess.ID)
+		return WrapModuleError("AdaptiveSplit", "fragment", err)
+	}
+
+	// 8. Create send buffer
+	sendBuf := b.fragmentMgr.CreateSendBuffer(sess.ID, data)
+	sendBuf.SetCodecInfo(codes, codecHash)
+	sendBuf.SetEncodedData(encodedData)
+	sess.SetTotalFragments(uint16(len(fragments)))
+
+	// 9. Distribute fragments across channels
+	for i, fragData := range fragments {
+		// Select channel for this fragment
+		chInfo, err := b.channelPool.SelectForMTU(len(fragData) + 64)
+		if err != nil {
+			chInfo, _ = b.channelPool.RandomSelect()
+		}
+
+		if chInfo == nil {
+			continue
+		}
+
+		// Build V2Header
+		header := &protocol.V2Header{
+			SessionID:     sess.ID,
+			FragmentIndex: uint16(i),
+			FragmentTotal: uint16(len(fragments)),
+			CodecDepth:    uint8(len(codes)),
+			CodecHash:     codecHash,
+			DataChecksum:  checksums[i],
+			DataHash:      dataHash,
+			Flags:         0,
+		}
+		if i == len(fragments)-1 {
+			header.Flags |= protocol.FlagV2IsLast
+		}
+
+		// Encode header + fragment
+		packet := header.Encode(fragData)
+
+		// Send
+		if err := chInfo.Channel.Send(packet); err != nil {
+			b.channelPool.RecordError(chInfo.ID)
+			continue
+		}
+
+		// Record success
+		b.channelPool.RecordSend(chInfo.ID, time.Millisecond)
+		sendBuf.AddFragment(uint16(i), fragData, checksums[i], chInfo.ID)
+		sess.IncrementSent()
+	}
+
+	// Update adaptive timer
+	b.adaptiveTimer.AddMeasurement(time.Since(sess.CreatedAt))
+
+	return nil
+}
+
+// === Receiving ===
+
+// Receive receives data (blocking mode).
+func (b *V2Bus) Receive() ([]byte, error) {
+	select {
+	case data := <-b.recvQueue:
+		return data, nil
+	case <-b.stopChan:
+		return nil, ErrBusNotRunning
+	}
+}
+
+// ReceiveWithContext receives data with context.
+func (b *V2Bus) ReceiveWithContext(ctx context.Context) ([]byte, error) {
+	select {
+	case data := <-b.recvQueue:
+		return data, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-b.stopChan:
+		return nil, ErrBusNotRunning
+	}
+}
+
+// OnMessage sets message handler (callback mode).
+func (b *V2Bus) OnMessage(handler func([]byte)) {
+	b.messageHandler = handler
+}
+
+// OnError sets error handler.
+func (b *V2Bus) OnError(handler func(error)) {
+	b.errorHandler = handler
+}
+
+// StartReceive starts the background receive loop.
+func (b *V2Bus) StartReceive() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.running {
+		return ErrBusAlreadyRunning
+	}
+
+	b.running = true
+	return nil
+}
+
+// receiveLoop handles receiving from a channel.
+func (b *V2Bus) receiveLoop(info *channel.ChannelInfo) {
+	for {
+		select {
+		case <-b.stopChan:
+			return
+		default:
+			data, err := info.Channel.Receive()
+			if err != nil {
+				b.channelPool.RecordError(info.ID)
+				if b.errorHandler != nil {
+					b.errorHandler(WrapModuleError("Receive", "channel", err))
+				}
+				continue
+			}
+
+			b.channelPool.RecordSend(info.ID, time.Millisecond)
+
+			// Process received packet
+			if err := b.processReceivedPacket(data, info); err != nil {
+				if b.errorHandler != nil {
+					b.errorHandler(err)
+				}
+			}
+		}
+	}
+}
+
+// processReceivedPacket processes a received packet.
+func (b *V2Bus) processReceivedPacket(data []byte, info *channel.ChannelInfo) error {
+	// Decode header
+	header, fragmentData, err := protocol.DecodeV2Header(data)
+	if err != nil {
+		return WrapModuleError("DecodeV2Header", "protocol", err)
+	}
+
+	// Check packet type
+	if header.IsNAK() {
+		return b.handleNAK(header)
+	}
+
+	if header.IsEND_ACK() {
+		return b.handleEND_ACK(header)
+	}
+
+	// Regular fragment
+	return b.handleFragment(header, fragmentData, info)
+}
+
+// handleFragment handles a regular data fragment.
+func (b *V2Bus) handleFragment(header *protocol.V2Header, fragmentData []byte, info *channel.ChannelInfo) error {
+	// Get or create receive buffer
+	buf, err := b.fragmentMgr.GetRecvBuffer(header.SessionID)
+	if err != nil {
+		// Create new receive buffer
+		buf = b.fragmentMgr.CreateRecvBuffer(
+			header.SessionID,
+			header.FragmentTotal,
+			header.CodecDepth,
+			header.CodecHash,
+			header.DataHash,
+		)
+
+		// Create receive session
+		b.sessionMgr.CreateRecvSession(
+			header.SessionID,
+			nil,
+			header.CodecHash,
+			int(header.CodecDepth),
+			header.DataHash,
+		)
+	}
+
+	// Add fragment
+	if !buf.AddFragment(header.FragmentIndex, fragmentData, header.DataChecksum) {
+		return nil
+	}
+
+	// Check if complete
+	if !buf.IsComplete() {
+		// Send NAK for missing fragments
+		missing := buf.GetMissing()
+		if len(missing) > 0 {
+			return b.sendNAK(header.SessionID, missing)
+		}
+		return nil
+	}
+
+	// Reassemble
+	encodedData, err := buf.Reassemble()
+	if err != nil {
+		return WrapModuleError("Reassemble", "fragment", err)
+	}
+
+	// Match codec chain by hash
+	codes, chain, err := b.codecManager.MatchByHash(header.CodecHash)
+	if err != nil {
+		return WrapModuleError("MatchByHash", "codec", err)
+	}
+
+	_ = codes // Codec codes matched
+
+	// Decode
+	decodedData, err := chain.Decode(encodedData)
+	if err != nil {
+		return WrapModuleError("Decode", "codec", err)
+	}
+
+	// Verify data hash
+	if !internal.VerifyDataHash(decodedData, header.DataHash) {
+		return ErrFragmentCorrupted
+	}
+
+	// Send END_ACK
+	if err := b.sendEND_ACK(header.SessionID); err != nil {
+		return err
+	}
+
+	// Complete session
+	b.sessionMgr.CompleteRecvSession(header.SessionID)
+	b.fragmentMgr.RemoveRecvBuffer(header.SessionID)
+
+	// Deliver to application
+	if b.config.ReceiveMode == ReceiveModeBlocking {
+		select {
+		case b.recvQueue <- decodedData:
+		default:
+			// Queue full, drop
+		}
+	} else if b.messageHandler != nil {
+		b.messageHandler(decodedData)
+	}
+
+	return nil
+}
+
+// handleNAK handles a NAK message.
+func (b *V2Bus) handleNAK(header *protocol.V2Header) error {
+	// Get send buffer
+	buf, err := b.fragmentMgr.GetSendBuffer(header.SessionID)
+	if err != nil {
+		return err
+	}
+
+	// Get session
+	sess, err := b.sessionMgr.GetSendSession(header.SessionID)
+	if err != nil {
+		return err
+	}
+
+	// Check retransmit limit
+	if !sess.IncrementRetransmit() {
+		sess.MarkExpired()
+		b.fragmentMgr.RemoveSendBuffer(header.SessionID)
+		return ErrRetransmitExceeded
+	}
+
+	// Get fragments for retransmission
+	fragments := buf.GetMissingFragments([]uint16{})
+	for _, frag := range fragments {
+		// Select healthy channel for retransmit
+		chInfo, err := b.channelPool.SelectHealthy()
+		if err != nil {
+			chInfo, _ = b.channelPool.RandomSelect()
+		}
+
+		if chInfo == nil {
+			continue
+		}
+
+		// Build header
+		retransmitHeader := &protocol.V2Header{
+			SessionID:     header.SessionID,
+			FragmentIndex: frag.Index,
+			FragmentTotal: header.FragmentTotal,
+			CodecDepth:    uint8(len(buf.CodecCodes)),
+			CodecHash:     buf.CodecHash,
+			DataChecksum:  frag.Checksum,
+			DataHash:      buf.DataHash,
+			Flags:         protocol.FlagV2Retransmit,
+		}
+
+		packet := retransmitHeader.Encode(frag.Data)
+
+		if err := chInfo.Channel.Send(packet); err != nil {
+			b.channelPool.RecordError(chInfo.ID)
+			continue
+		}
+
+		b.channelPool.RecordSend(chInfo.ID, time.Millisecond)
+	}
+
+	return nil
+}
+
+// handleEND_ACK handles an END_ACK message.
+func (b *V2Bus) handleEND_ACK(header *protocol.V2Header) error {
+	// Complete send session
+	if err := b.sessionMgr.CompleteSendSession(header.SessionID); err != nil {
+		return err
+	}
+
+	// Remove send buffer
+	b.fragmentMgr.RemoveSendBuffer(header.SessionID)
+
+	return nil
+}
+
+// sendNAK sends a NAK message for missing fragments.
+func (b *V2Bus) sendNAK(sessionID string, missing []uint16) error {
+	// Select healthy channel
+	chInfo, err := b.channelPool.SelectHealthy()
+	if err != nil {
+		chInfo, _ = b.channelPool.RandomSelect()
+	}
+
+	if chInfo == nil {
+		return ErrNoHealthyChannel
+	}
+
+	// Build NAK header
+	header := &protocol.V2Header{
+		SessionID: sessionID,
+		Flags:     protocol.FlagV2IsNAK,
+	}
+
+	// Encode missing indices into extra data
+	extra := encodeNAKIndices(missing)
+	packet := header.Encode(extra)
+
+	return chInfo.Channel.Send(packet)
+}
+
+// sendEND_ACK sends an END_ACK message.
+func (b *V2Bus) sendEND_ACK(sessionID string) error {
+	// Select healthy channel
+	chInfo, err := b.channelPool.SelectHealthy()
+	if err != nil {
+		chInfo, _ = b.channelPool.RandomSelect()
+	}
+
+	if chInfo == nil {
+		return ErrNoHealthyChannel
+	}
+
+	header := &protocol.V2Header{
+		SessionID: sessionID,
+		Flags:     protocol.FlagV2IsEND_ACK,
+	}
+
+	packet := header.Encode(nil)
+
+	return chInfo.Channel.Send(packet)
+}
+
+// encodeNAKIndices encodes missing indices for NAK packet.
+func encodeNAKIndices(indices []uint16) []byte {
+	result := make([]byte, len(indices)*2)
+	for i, idx := range indices {
+		result[i*2] = byte(idx >> 8)
+		result[i*2+1] = byte(idx)
+	}
+	return result
+}
+
+// === Lifecycle ===
+
+// Start starts the bus.
+func (b *V2Bus) Start() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.running {
+		return ErrBusAlreadyRunning
+	}
+
+	if !b.connected {
+		return ErrChannelNotReady
+	}
+
+	b.running = true
+	return nil
+}
+
+// Stop stops the bus.
+func (b *V2Bus) Stop() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if !b.running {
+		return ErrBusNotRunning
+	}
+
+	b.running = false
+	close(b.stopChan)
+
+	// Stop managers
+	b.fragmentMgr.Stop()
+	b.sessionMgr.Stop()
+
+	return nil
+}
+
+// Close closes the bus and releases all resources.
+func (b *V2Bus) Close() error {
+	return b.Stop()
+}
+
+// IsRunning returns whether the bus is running.
+func (b *V2Bus) IsRunning() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.running
+}
+
+// IsConnected returns whether the bus is connected.
+func (b *V2Bus) IsConnected() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.connected
+}
+
+// === Statistics ===
+
+// Stats returns bus statistics.
+func (b *V2Bus) Stats() V2BusStats {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	return V2BusStats{
+		Connected:     b.connected,
+		Negotiated:    b.negotiated,
+		Running:       b.running,
+		ChannelCount:  b.channelPool.Count(),
+		CodecCount:    len(b.codecManager.GetSupportedCodes()),
+		SessionStats:  b.sessionMgr.Stats(),
+		FragmentStats: b.fragmentMgr.Stats(),
+	}
+}
+
+// V2BusStats holds bus statistics.
+type V2BusStats struct {
+	Connected     bool
+	Negotiated    bool
+	Running       bool
+	ChannelCount  int
+	CodecCount    int
+	SessionStats  session.SessionManagerStats
+	FragmentStats fragment.V2FragmentStats
+}
+
+// === Debug ===
+
+// SetDebugMode enables debug mode.
+func (b *V2Bus) SetDebugMode(enable bool) {
+	b.config.DebugMode = enable
+}
+
+// GetConfig returns current configuration.
+func (b *V2Bus) GetConfig() *BusConfig {
+	return b.config
+}
+
+// GetCodecManager returns codec manager.
+func (b *V2Bus) GetCodecManager() *codec.CodecManager {
+	return b.codecManager
+}
+
+// GetChannelPool returns channel pool.
+func (b *V2Bus) GetChannelPool() *channel.ChannelPool {
+	return b.channelPool
+}
+
+// GetSessionManager returns session manager.
+func (b *V2Bus) GetSessionManager() *session.SessionManager {
+	return b.sessionMgr
+}
+
+// GetFragmentManager returns fragment manager.
+func (b *V2Bus) GetFragmentManager() *fragment.V2FragmentManager {
+	return b.fragmentMgr
+}
+
+// Validate validates bus configuration.
+func (b *V2Bus) Validate() error {
+	if len(b.codecManager.GetSupportedCodes()) == 0 {
+		return ErrCodecChainRequired
+	}
+	if b.channelPool.Count() == 0 {
+		return ErrChannelRequired
+	}
+	return b.config.Validate()
+}
