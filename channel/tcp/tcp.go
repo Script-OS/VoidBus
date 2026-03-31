@@ -156,23 +156,36 @@ func (c *ClientChannel) Send(data []byte) error {
 //
 // Return Guarantees:
 //   - On success: returns complete data frame
+//
+// Important: This method does NOT hold the read lock during blocking I/O
+// to avoid deadlock with Close(). Close() needs the write lock to proceed.
 func (c *ClientChannel) Receive() ([]byte, error) {
+	// Check connection status under read lock
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	if c.closed {
+		c.mu.RUnlock()
 		return nil, channel.ErrChannelClosed
 	}
 	if !c.connected {
+		c.mu.RUnlock()
 		return nil, channel.ErrChannelDisconnected
 	}
+	conn := c.conn
+	c.mu.RUnlock()
 
-	// Read length prefix
+	// Release read lock before blocking I/O to allow Close() to proceed
+	// If connection is closed during read, io.ReadFull will return error
+
+	// Read length prefix (blocking)
 	lengthBuf := make([]byte, LengthPrefixSize)
-	if _, err := io.ReadFull(c.conn, lengthBuf); err != nil {
+	if _, err := io.ReadFull(conn, lengthBuf); err != nil {
 		c.handleDisconnect()
 		if errors.Is(err, io.EOF) {
 			return nil, channel.ErrChannelDisconnected
+		}
+		// Check if connection was closed
+		if errors.Is(err, net.ErrClosed) {
+			return nil, channel.ErrChannelClosed
 		}
 		return nil, &channel.ChannelError{
 			Op:        "receive",
@@ -187,10 +200,10 @@ func (c *ClientChannel) Receive() ([]byte, error) {
 		return nil, errors.New("tcp: received frame exceeds max size")
 	}
 
-	// Read data
+	// Read data (blocking)
 	data := make([]byte, length)
 	if length > 0 {
-		if _, err := io.ReadFull(c.conn, data); err != nil {
+		if _, err := io.ReadFull(conn, data); err != nil {
 			c.handleDisconnect()
 			return nil, &channel.ChannelError{
 				Op:        "receive",
@@ -201,7 +214,11 @@ func (c *ClientChannel) Receive() ([]byte, error) {
 		}
 	}
 
+	// Update last activity under read lock
+	c.mu.RLock()
 	c.lastActivity = time.Now()
+	c.mu.RUnlock()
+
 	return data, nil
 }
 
@@ -340,22 +357,34 @@ func (s *ServerChannel) Receive() ([]byte, error) {
 // Close implements channel.Channel.Close.
 func (s *ServerChannel) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.closed {
+		s.mu.Unlock()
 		return channel.ErrChannelClosed
 	}
 
 	s.closed = true
 
-	// Close all client connections
+	// Copy clients to close outside of lock to avoid deadlock
+	// client.Close() may call removeClient which tries to acquire s.mu
+	clients := make([]*AcceptedChannel, 0, len(s.clients))
 	for _, client := range s.clients {
-		client.Close()
+		clients = append(clients, client)
 	}
 	s.clients = make(map[string]*AcceptedChannel)
+	s.mu.Unlock()
 
-	if s.listener != nil {
-		return s.listener.Close()
+	// Close all client connections outside of lock
+	for _, client := range clients {
+		client.Close()
+	}
+
+	// Close listener
+	s.mu.RLock()
+	listener := s.listener
+	s.mu.RUnlock()
+
+	if listener != nil {
+		return listener.Close()
 	}
 	return nil
 }
@@ -450,22 +479,33 @@ func (a *AcceptedChannel) Send(data []byte) error {
 }
 
 // Receive implements channel.Channel.Receive.
+// Important: This method does NOT hold the read lock during blocking I/O
+// to avoid deadlock with Close(). Close() needs the write lock to proceed.
 func (a *AcceptedChannel) Receive() ([]byte, error) {
+	// Check connection status under read lock
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-
 	if a.closed {
+		a.mu.RUnlock()
 		return nil, channel.ErrChannelClosed
 	}
 	if !a.connected {
+		a.mu.RUnlock()
 		return nil, channel.ErrChannelDisconnected
 	}
+	conn := a.conn
+	a.mu.RUnlock()
 
+	// Release read lock before blocking I/O to allow Close() to proceed
+
+	// Read length prefix (blocking)
 	lengthBuf := make([]byte, LengthPrefixSize)
-	if _, err := io.ReadFull(a.conn, lengthBuf); err != nil {
+	if _, err := io.ReadFull(conn, lengthBuf); err != nil {
 		a.handleDisconnect()
 		if errors.Is(err, io.EOF) {
 			return nil, channel.ErrChannelDisconnected
+		}
+		if errors.Is(err, net.ErrClosed) {
+			return nil, channel.ErrChannelClosed
 		}
 		return nil, &channel.ChannelError{
 			Op:        "receive",
@@ -480,9 +520,10 @@ func (a *AcceptedChannel) Receive() ([]byte, error) {
 		return nil, errors.New("tcp: received frame exceeds max size")
 	}
 
+	// Read data (blocking)
 	data := make([]byte, length)
 	if length > 0 {
-		if _, err := io.ReadFull(a.conn, data); err != nil {
+		if _, err := io.ReadFull(conn, data); err != nil {
 			a.handleDisconnect()
 			return nil, &channel.ChannelError{
 				Op:        "receive",
@@ -493,7 +534,11 @@ func (a *AcceptedChannel) Receive() ([]byte, error) {
 		}
 	}
 
+	// Update last activity under read lock
+	a.mu.RLock()
 	a.lastActivity = time.Now()
+	a.mu.RUnlock()
+
 	return data, nil
 }
 
