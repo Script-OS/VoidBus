@@ -487,74 +487,71 @@ multiBus.SendVia("primary", []byte("Important data"))
 VoidBus/
 ├── docs/
 │   ├── ARCHITECTURE.md          # 架构设计文档
-│   ├── INTERFACE.md             # 接口详细说明
-│   ├── SECURITY.md              # 安全设计文档
-│   └── MODULE_DEVELOPMENT.md    # 模块开发指南
+│   └── INTERFACE.md             # 接口详细说明
 │
-├── bus.go                       # Bus核心实现
-├── serverbus.go                 # ServerBus实现
-├── multibus.go                  # MultiBus实现
-├── packet.go                    # Packet/Header结构
-├── handshake.go                 # Handshake协议实现
-├── registry.go                  # SessionRegistry实现
-├── policy.go                    # NegotiationPolicy定义
-├── message.go                   # Message结构定义
-├── errors.go                    # 错误定义
+├── core/                        # 核心组装层
+│   ├── interfaces.go            # Bus/ServerBus/MultiBus接口定义
+│   ├── bus.go                   # Bus核心实现
+│   ├── serverbus.go             # ServerBus实现（服务端Hall模式）
+│   ├── multibus.go              # MultiBus实现（多信道组合）
+│   └── README.md                # 模块文档
 │
-├── serializer/                  # 序列化器模块
-│   ├── serializer.go            # Serializer接口定义
-│   ├── registry.go              # SerializerRegistry
-│   ├── plain/
-│   │   ├── plain.go             # Plain实现
-│   │   └── plain_empty.go       # build tag空实现
-│   ├── json/
-│   │   └── json.go              # JSON实现
-│   └── protobuf/
-│       └── protobuf.go          # Protobuf实现
+├── protocol/                    # 协议层
+│   ├── packet.go                # Packet/Header结构
+│   ├── handshake.go             # Handshake协议实现
+│   ├── message.go               # Message结构定义
+│   ├── policy.go                # NegotiationPolicy定义
+│   └── README.md                # 模块文档
 │
-├── codec/                       # 编码/加密模块
-│   ├── codec.go                 # Codec接口定义
+├── registry/                    # 注册表
+│   ├── registry.go              # SessionRegistry实现
+│   └── README.md                # 模块文档
+│
+├── errors.go                    # 全局错误定义
+│
+├── serializer/                  # 序列化器模块 [可暴露]
+│   ├── interface.go             # Serializer接口定义
+│   ├── serializer.go            # SerializerRegistry
+│   ├── plain/                   # Pass-through实现
+│   │   └── plain.go
+│   └── README.md                # 模块文档
+│
+├── codec/                       # 编码/加密模块 [不可暴露]
+│   ├── interface.go             # Codec接口定义
+│   ├── codec.go                 # CodecRegistry
 │   ├── chain.go                 # CodecChain实现
-│   ├── registry.go              # CodecRegistry
-│   ├── plain/
-│   │   └── plain.go             # Plain Codec（仅调试）
-│   ├── base64/
-│   │   └── base64.go            # Base64实现
-│   ├── aes/
-│   │   ├── aes.go               # AES实现
-│   │   └── aes_empty.go         # build tag空实现
-│   └── rsa/
-│       └── rsa.go               # RSA实现
+│   ├── plain/                   # Pass-through（仅调试）
+│   │   └── plain.go
+│   ├── base64/                  # Base64编码
+│   │   └── base64.go
+│   ├── aes/                     # AES-GCM加密
+│   │   └── aes.go
+│   └── README.md                # 模块文档
 │
-├── channel/                     # 信道模块
-│   ├── channel.go               # Channel接口定义
-│   ├── registry.go              # ChannelRegistry
-│   ├── tcp/
-│   │   ├── tcp.go               # TCP实现
-│   │   └── tcp_empty.go         # build tag空实现
-│   ├── udp/
-│   │   └── udp.go               # UDP实现
-│   └── icmp/
-│       └── icmp.go              # ICMP实现
+├── channel/                     # 信道模块 [不可暴露]
+│   ├── interface.go             # Channel接口定义
+│   ├── channel.go               # ChannelRegistry
+│   ├── tcp/                     # TCP传输实现
+│   │   └── tcp.go
+│   └── README.md                # 模块文档
 │
-├── fragment/                    # 分片模块
-│   ├── fragment.go              # Fragment接口定义
-│   ├── manager.go               # FragmentManager实现
-│   └── default/
-│       └── default.go           # 默认实现
+├── fragment/                    # 分片模块 [部分可暴露]
+│   ├── fragment.go              # Fragment接口 + FragmentManager
+│   └── README.md                # 模块文档
 │
-├── keyprovider/                 # 密钥提供者
+├── keyprovider/                 # 密钥提供者 [不可暴露]
 │   ├── keyprovider.go           # KeyProvider接口定义
-│   ├── url/
-│   │   ├── url.go               # URL实现（预留，待确定格式）
-│   │   └── url_empty.go         # build tag空实现
-│   └── embedded/
-│       └── embedded.go          # Embedded实现（使用embed.FS）
+│   ├── embedded/                # 编译时嵌入密钥
+│   │   └── embedded.go
+│   └── README.md                # 模块文档
 │
-└── internal/                    # 内部工具
-    ├── crypto.go                # 加密工具（挑战验证等）
-    ├── id.go                    # ID生成工具
-    └── checksum.go              # 校验和计算
+├── internal/                    # 内部工具（不对外暴露）
+│   ├── id.go                    # ID生成（UUID/SessionID）
+│   ├── checksum.go              # CRC32校验
+│   ├── crypto.go                # Challenge验证
+│   └── README.md                # 包约束说明
+│
+└── README.md                    # 项目说明
 ```
 
 ## 6. 质量保证
