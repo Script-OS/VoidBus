@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"VoidBus/fragment"
-	"VoidBus/internal"
+	"github.com/Script-OS/VoidBus/fragment"
+	"github.com/Script-OS/VoidBus/internal"
 )
 
 func TestNewPacket(t *testing.T) {

@@ -21,16 +21,16 @@ import (
 	"syscall"
 	"time"
 
-	"VoidBus/channel"
-	"VoidBus/channel/tcp"
-	"VoidBus/codec"
-	"VoidBus/codec/base64"
-	"VoidBus/core"
-	"VoidBus/fragment"
-	"VoidBus/fragment/simple"
-	"VoidBus/keyprovider/embedded"
-	"VoidBus/protocol"
-	"VoidBus/serializer/plain"
+	"github.com/Script-OS/VoidBus/channel"
+	"github.com/Script-OS/VoidBus/channel/tcp"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/codec/base64"
+	"github.com/Script-OS/VoidBus/core"
+	"github.com/Script-OS/VoidBus/fragment"
+	"github.com/Script-OS/VoidBus/fragment/simple"
+	"github.com/Script-OS/VoidBus/keyprovider/embedded"
+	"github.com/Script-OS/VoidBus/protocol"
+	"github.com/Script-OS/VoidBus/serializer/plain"
 )
 
 // ServerConfig holds server configuration

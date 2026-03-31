@@ -16,11 +16,12 @@ import (
 	"sync"
 	"time"
 
-	"VoidBus/channel"
-	"VoidBus/codec"
-	"VoidBus/fragment"
-	"VoidBus/keyprovider"
-	"VoidBus/serializer"
+	"github.com/Script-OS/VoidBus/channel"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/fragment"
+	"github.com/Script-OS/VoidBus/keyprovider"
+	"github.com/Script-OS/VoidBus/protocol"
+	"github.com/Script-OS/VoidBus/serializer"
 )
 
 // Session registry errors
@@ -30,6 +31,16 @@ var (
 	ErrSessionExpired   = errors.New("session: expired")
 	ErrInvalidSessionID = errors.New("session: invalid id")
 )
+
+// RegistryStatistics contains registry statistics.
+type RegistryStatistics struct {
+	TotalSessions    int
+	ActiveSessions   int
+	IdleSessions     int
+	ClosedSessions   int
+	HandshakingCount int
+	ExpiredCount     int
+}
 
 // SessionConfig holds configuration for a session.
 // IMPORTANT: This structure is stored locally only and MUST NOT be transmitted over network.
@@ -42,6 +53,9 @@ var (
 type SessionConfig struct {
 	// SessionID is unique identifier for the session
 	SessionID string
+
+	// Status is session status
+	Status protocol.SessionStatus
 
 	// Serializer is the selected serializer
 	Serializer serializer.Serializer
@@ -58,6 +72,15 @@ type SessionConfig struct {
 	// Fragment is the fragment handler (optional)
 	Fragment fragment.Fragment
 
+	// SecurityLevel is the negotiated security level
+	SecurityLevel codec.SecurityLevel
+
+	// ClientID is client identifier
+	ClientID string
+
+	// RemoteAddress is remote endpoint
+	RemoteAddress string
+
 	// CreatedAt is session creation time
 	CreatedAt time.Time
 
@@ -66,6 +89,11 @@ type SessionConfig struct {
 
 	// Metadata contains additional session metadata
 	Metadata map[string]string
+
+	// Statistics
+	SendCount    int64
+	ReceiveCount int64
+	ErrorCount   int64
 }
 
 // SessionRegistry manages session configurations.
@@ -73,11 +101,20 @@ type SessionRegistry interface {
 	// Register registers a new session.
 	Register(config SessionConfig) error
 
+	// RegisterSession registers from protocol.Session.
+	RegisterSession(session *protocol.Session) error
+
 	// Get retrieves session configuration by ID.
 	Get(sessionID string) (*SessionConfig, error)
 
+	// GetSession retrieves as protocol.Session.
+	GetSession(sessionID string) (*protocol.Session, error)
+
 	// Update updates session configuration.
 	Update(sessionID string, config SessionConfig) error
+
+	// UpdateSession updates from protocol.Session.
+	UpdateSession(session *protocol.Session) error
 
 	// Remove removes a session.
 	Remove(sessionID string) error
@@ -88,8 +125,14 @@ type SessionRegistry interface {
 	// List returns all session IDs.
 	List() []string
 
+	// ListByStatus returns session IDs by status.
+	ListByStatus(status protocol.SessionStatus) []string
+
 	// Count returns number of sessions.
 	Count() int
+
+	// CountByStatus returns number of sessions by status.
+	CountByStatus(status protocol.SessionStatus) int
 
 	// Clear removes all sessions.
 	Clear() error
@@ -99,6 +142,15 @@ type SessionRegistry interface {
 
 	// GetExpired returns expired session IDs.
 	GetExpired(timeout time.Duration) []string
+
+	// CleanupExpired removes expired sessions and returns count.
+	CleanupExpired(timeout time.Duration) int
+
+	// GetActive returns active session IDs.
+	GetActive() []string
+
+	// GetStatistics returns registry statistics.
+	GetStatistics() RegistryStatistics
 }
 
 // DefaultSessionRegistry is the default SessionRegistry implementation.
@@ -243,4 +295,162 @@ func (r *DefaultSessionRegistry) GetExpired(timeout time.Duration) []string {
 		}
 	}
 	return expired
+}
+
+// RegisterSession registers from protocol.Session.
+func (r *DefaultSessionRegistry) RegisterSession(session *protocol.Session) error {
+	if session == nil || session.ID == "" {
+		return ErrInvalidSessionID
+	}
+
+	config := SessionConfig{
+		SessionID:     session.ID,
+		Status:        session.Status,
+		Serializer:    session.Serializer,
+		CodecChain:    session.CodecChain,
+		Channel:       session.Channel,
+		KeyProvider:   session.KeyProvider,
+		Fragment:      session.Fragment,
+		SecurityLevel: session.SecurityLevel,
+		ClientID:      session.ClientID,
+		RemoteAddress: session.RemoteAddress,
+		CreatedAt:     session.CreatedAt,
+		LastActivity:  session.LastActivity,
+		Metadata:      session.Metadata,
+		SendCount:     session.SendCount,
+		ReceiveCount:  session.ReceiveCount,
+		ErrorCount:    session.ErrorCount,
+	}
+
+	return r.Register(config)
+}
+
+// GetSession retrieves as protocol.Session.
+func (r *DefaultSessionRegistry) GetSession(sessionID string) (*protocol.Session, error) {
+	config, err := r.Get(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	session := protocol.NewSession(config.SessionID)
+	session.Status = config.Status
+	session.Serializer = config.Serializer
+	session.CodecChain = config.CodecChain
+	session.Channel = config.Channel
+	session.KeyProvider = config.KeyProvider
+	session.Fragment = config.Fragment
+	session.SecurityLevel = config.SecurityLevel
+	session.ClientID = config.ClientID
+	session.RemoteAddress = config.RemoteAddress
+	session.CreatedAt = config.CreatedAt
+	session.LastActivity = config.LastActivity
+	session.Metadata = config.Metadata
+	session.SendCount = config.SendCount
+	session.ReceiveCount = config.ReceiveCount
+	session.ErrorCount = config.ErrorCount
+
+	return session, nil
+}
+
+// UpdateSession updates from protocol.Session.
+func (r *DefaultSessionRegistry) UpdateSession(session *protocol.Session) error {
+	if session == nil || session.ID == "" {
+		return ErrInvalidSessionID
+	}
+
+	config := SessionConfig{
+		SessionID:     session.ID,
+		Status:        session.Status,
+		Serializer:    session.Serializer,
+		CodecChain:    session.CodecChain,
+		Channel:       session.Channel,
+		KeyProvider:   session.KeyProvider,
+		Fragment:      session.Fragment,
+		SecurityLevel: session.SecurityLevel,
+		ClientID:      session.ClientID,
+		RemoteAddress: session.RemoteAddress,
+		CreatedAt:     session.CreatedAt,
+		LastActivity:  session.LastActivity,
+		Metadata:      session.Metadata,
+		SendCount:     session.SendCount,
+		ReceiveCount:  session.ReceiveCount,
+		ErrorCount:    session.ErrorCount,
+	}
+
+	return r.Update(session.ID, config)
+}
+
+// ListByStatus returns session IDs by status.
+func (r *DefaultSessionRegistry) ListByStatus(status protocol.SessionStatus) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make([]string, 0)
+	for id, config := range r.sessions {
+		if config.Status == status {
+			result = append(result, id)
+		}
+	}
+	return result
+}
+
+// CountByStatus returns number of sessions by status.
+func (r *DefaultSessionRegistry) CountByStatus(status protocol.SessionStatus) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	count := 0
+	for _, config := range r.sessions {
+		if config.Status == status {
+			count++
+		}
+	}
+	return count
+}
+
+// CleanupExpired removes expired sessions and returns count.
+func (r *DefaultSessionRegistry) CleanupExpired(timeout time.Duration) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	count := 0
+
+	for id, config := range r.sessions {
+		if now.Sub(config.LastActivity) > timeout {
+			delete(r.sessions, id)
+			count++
+		}
+	}
+	return count
+}
+
+// GetActive returns active session IDs.
+func (r *DefaultSessionRegistry) GetActive() []string {
+	return r.ListByStatus(protocol.SessionStatusActive)
+}
+
+// GetStatistics returns registry statistics.
+func (r *DefaultSessionRegistry) GetStatistics() RegistryStatistics {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	stats := RegistryStatistics{
+		TotalSessions: len(r.sessions),
+	}
+
+	for _, config := range r.sessions {
+		switch config.Status {
+		case protocol.SessionStatusActive:
+			stats.ActiveSessions++
+		case protocol.SessionStatusIdle:
+			stats.IdleSessions++
+		case protocol.SessionStatusClosed:
+			stats.ClosedSessions++
+		case protocol.SessionStatusHandshaking:
+			stats.HandshakingCount++
+		}
+	}
+
+	return stats
 }

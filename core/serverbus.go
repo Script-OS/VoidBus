@@ -17,12 +17,12 @@ import (
 	"sync"
 	"time"
 
-	"VoidBus/channel"
-	"VoidBus/codec"
-	"VoidBus/internal"
-	"VoidBus/keyprovider"
-	"VoidBus/protocol"
-	"VoidBus/serializer"
+	"github.com/Script-OS/VoidBus/channel"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/internal"
+	"github.com/Script-OS/VoidBus/keyprovider"
+	"github.com/Script-OS/VoidBus/protocol"
+	"github.com/Script-OS/VoidBus/serializer"
 )
 
 // ServerBus errors
@@ -522,34 +522,18 @@ func (s *ServerBus) handleError(op string, err error) {
 	}
 }
 
-// Handshake serialization helpers (simplified)
+// Handshake serialization helpers
 
 func (s *ServerBus) deserializeHandshakeRequest(data []byte) (*protocol.HandshakeRequest, error) {
-	// Simplified: in real implementation, use serializer
-	return &protocol.HandshakeRequest{
-		ClientID:             "client_" + string(data[:8]),
-		SupportedSerializers: []protocol.SerializerInfo{{Name: s.serializer.Name(), Priority: 10}},
-		SupportedCodecChains: []protocol.CodecChainInfo{
-			{SecurityLevel: s.codecChain.SecurityLevel(), ChainLength: s.codecChain.Length(), Hash: "default"},
-		},
-		MinSecurityLevel: s.handshake.GetPolicy().MinSecurityLevel,
-		Timestamp:        time.Now().Unix(),
-		Version:          protocol.PacketVersion,
-	}, nil
+	return protocol.DeserializeRequest(data)
 }
 
 func (s *ServerBus) serializeHandshakeResponse(resp *protocol.HandshakeResponse) ([]byte, error) {
-	// Simplified: in real implementation, use serializer
-	return []byte(resp.SessionID), nil
+	return protocol.SerializeResponse(resp)
 }
 
 func (s *ServerBus) deserializeHandshakeConfirm(data []byte) (*protocol.HandshakeConfirm, error) {
-	// Simplified: in real implementation, use serializer
-	return &protocol.HandshakeConfirm{
-		SessionID:         string(data),
-		ChallengeResponse: data,
-		Timestamp:         time.Now().Unix(),
-	}, nil
+	return protocol.DeserializeConfirm(data)
 }
 
 // ServerBusBuilder provides fluent API for building ServerBus.

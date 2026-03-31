@@ -14,11 +14,12 @@
 package core
 
 import (
-	"VoidBus/channel"
-	"VoidBus/codec"
-	"VoidBus/fragment"
-	"VoidBus/keyprovider"
-	"VoidBus/serializer"
+	"github.com/Script-OS/VoidBus/channel"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/fragment"
+	"github.com/Script-OS/VoidBus/keyprovider"
+	"github.com/Script-OS/VoidBus/protocol"
+	"github.com/Script-OS/VoidBus/serializer"
 )
 
 // BusInterface defines the contract for a single-channel bus.
@@ -265,6 +266,22 @@ func (s ChannelSelectionStrategy) String() string {
 		return "specified"
 	default:
 		return "unknown"
+	}
+}
+
+// ToDistributionStrategy converts to protocol.DistributionStrategy.
+func (s ChannelSelectionStrategy) ToDistributionStrategy() protocol.DistributionStrategy {
+	switch s {
+	case StrategyRandom:
+		return protocol.DistributeAllRandom
+	case StrategyRoundRobin:
+		return protocol.DistributeRoundRobin
+	case StrategyWeighted:
+		return protocol.DistributeWeighted
+	case StrategySpecified:
+		return protocol.DistributeGrouped
+	default:
+		return protocol.DistributeAllRandom
 	}
 }
 

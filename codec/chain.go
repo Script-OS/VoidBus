@@ -15,7 +15,7 @@ import (
 	"errors"
 	"sync"
 
-	"VoidBus/keyprovider"
+	"github.com/Script-OS/VoidBus/keyprovider"
 )
 
 // Chain errors
@@ -110,6 +110,18 @@ type CodecChain interface {
 	//   - Returns list of InternalIDs (for internal use only)
 	//   - MUST NOT be transmitted
 	InternalIDs() []string
+
+	// GetCodec returns the codec at specified index.
+	//
+	// Parameter Constraints:
+	//   - index: valid position in chain (0 to Length()-1)
+	//
+	// Return Guarantees:
+	//   - Returns codec at index
+	//   - Returns ErrInvalidIndex if index out of bounds
+	//
+	// Note: For internal use only, not exposed in protocol.
+	GetCodec(index int) (Codec, error)
 }
 
 // DefaultChain is the default implementation of CodecChain.

@@ -12,8 +12,8 @@ package simple
 import (
 	"encoding/binary"
 
-	"VoidBus/fragment"
-	"VoidBus/internal"
+	"github.com/Script-OS/VoidBus/fragment"
+	"github.com/Script-OS/VoidBus/internal"
 )
 
 const (

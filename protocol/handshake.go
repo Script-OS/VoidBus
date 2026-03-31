@@ -17,8 +17,8 @@ import (
 	"errors"
 	"time"
 
-	"VoidBus/codec"
-	"VoidBus/internal"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/internal"
 )
 
 // Handshake errors
@@ -474,4 +474,207 @@ func (m *HandshakeManager) CleanupExpired() {
 // GetPolicy returns the current negotiation policy.
 func (m *HandshakeManager) GetPolicy() NegotiationPolicy {
 	return m.policy
+}
+
+// SerializeRequest serializes HandshakeRequest to bytes.
+func SerializeRequest(req *HandshakeRequest) ([]byte, error) {
+	if req == nil {
+		return nil, ErrInvalidRequest
+	}
+	// Simple serialization format:
+	// [version:1][timestamp:8][clientID_len:2][clientID][serializer_count:2][serializers...][codec_count:2][codecs...]
+	result := make([]byte, 0)
+	result = append(result, byte(req.Version))
+	result = append(result, encodeInt64(req.Timestamp)...)
+	result = append(result, encodeUint16(uint16(len(req.ClientID)))...)
+	result = append(result, []byte(req.ClientID)...)
+	result = append(result, encodeUint16(uint16(len(req.SupportedSerializers)))...)
+	for _, s := range req.SupportedSerializers {
+		result = append(result, encodeUint16(uint16(len(s.Name)))...)
+		result = append(result, []byte(s.Name)...)
+		result = append(result, byte(s.Priority))
+	}
+	result = append(result, encodeUint16(uint16(len(req.SupportedCodecChains)))...)
+	for _, c := range req.SupportedCodecChains {
+		result = append(result, byte(c.SecurityLevel))
+		result = append(result, byte(c.ChainLength))
+		result = append(result, encodeUint16(uint16(len(c.Hash)))...)
+		result = append(result, []byte(c.Hash)...)
+	}
+	result = append(result, byte(req.MinSecurityLevel))
+	return result, nil
+}
+
+// DeserializeRequest deserializes bytes to HandshakeRequest.
+func DeserializeRequest(data []byte) (*HandshakeRequest, error) {
+	if len(data) < 11 {
+		return nil, ErrInvalidRequest
+	}
+	req := NewHandshakeRequest("")
+	offset := 0
+	req.Version = data[offset]
+	offset++
+	req.Timestamp = decodeInt64(data[offset : offset+8])
+	offset += 8
+	clientIDLen := decodeUint16(data[offset : offset+2])
+	offset += 2
+	req.ClientID = string(data[offset : offset+int(clientIDLen)])
+	offset += int(clientIDLen)
+	serializerCount := decodeUint16(data[offset : offset+2])
+	offset += 2
+	for i := 0; i < int(serializerCount); i++ {
+		nameLen := decodeUint16(data[offset : offset+2])
+		offset += 2
+		name := string(data[offset : offset+int(nameLen)])
+		offset += int(nameLen)
+		priority := int(data[offset])
+		offset++
+		req.AddSerializer(name, priority)
+	}
+	codecCount := decodeUint16(data[offset : offset+2])
+	offset += 2
+	for i := 0; i < int(codecCount); i++ {
+		level := codec.SecurityLevel(data[offset])
+		offset++
+		chainLen := int(data[offset])
+		offset++
+		hashLen := decodeUint16(data[offset : offset+2])
+		offset += 2
+		hash := string(data[offset : offset+int(hashLen)])
+		offset += int(hashLen)
+		req.AddCodecChain(level, chainLen, hash)
+	}
+	if offset < len(data) {
+		req.MinSecurityLevel = codec.SecurityLevel(data[offset])
+	}
+	return req, nil
+}
+
+// SerializeResponse serializes HandshakeResponse to bytes.
+func SerializeResponse(resp *HandshakeResponse) ([]byte, error) {
+	if resp == nil {
+		return nil, ErrInvalidRequest
+	}
+	result := make([]byte, 0)
+	// [accepted:1][timestamp:8][sessionID_len:2][sessionID][reject_len:2][reject][serializer_len:2][serializer][codec_info][challenge_len:4][challenge]
+	result = append(result, byte(0))
+	if resp.Accepted {
+		result[0] = 1
+	}
+	result = append(result, encodeInt64(resp.Timestamp)...)
+	result = append(result, encodeUint16(uint16(len(resp.SessionID)))...)
+	result = append(result, []byte(resp.SessionID)...)
+	result = append(result, encodeUint16(uint16(len(resp.RejectReason)))...)
+	result = append(result, []byte(resp.RejectReason)...)
+	result = append(result, encodeUint16(uint16(len(resp.SelectedSerializer)))...)
+	result = append(result, []byte(resp.SelectedSerializer)...)
+	result = append(result, byte(resp.SelectedCodecChainInfo.SecurityLevel))
+	result = append(result, byte(resp.SelectedCodecChainInfo.ChainLength))
+	result = append(result, encodeUint16(uint16(len(resp.SelectedCodecChainInfo.Hash)))...)
+	result = append(result, []byte(resp.SelectedCodecChainInfo.Hash)...)
+	result = append(result, encodeUint32(uint32(len(resp.ServerChallenge)))...)
+	result = append(result, resp.ServerChallenge...)
+	return result, nil
+}
+
+// DeserializeResponse deserializes bytes to HandshakeResponse.
+func DeserializeResponse(data []byte) (*HandshakeResponse, error) {
+	if len(data) < 11 {
+		return nil, ErrInvalidRequest
+	}
+	resp := NewHandshakeResponse(data[0] == 1)
+	offset := 1
+	resp.Timestamp = decodeInt64(data[offset : offset+8])
+	offset += 8
+	sessionIDLen := decodeUint16(data[offset : offset+2])
+	offset += 2
+	resp.SessionID = string(data[offset : offset+int(sessionIDLen)])
+	offset += int(sessionIDLen)
+	rejectLen := decodeUint16(data[offset : offset+2])
+	offset += 2
+	resp.RejectReason = string(data[offset : offset+int(rejectLen)])
+	offset += int(rejectLen)
+	serializerLen := decodeUint16(data[offset : offset+2])
+	offset += 2
+	resp.SelectedSerializer = string(data[offset : offset+int(serializerLen)])
+	offset += int(serializerLen)
+	resp.SelectedCodecChainInfo.SecurityLevel = codec.SecurityLevel(data[offset])
+	offset++
+	resp.SelectedCodecChainInfo.ChainLength = int(data[offset])
+	offset++
+	hashLen := decodeUint16(data[offset : offset+2])
+	offset += 2
+	resp.SelectedCodecChainInfo.Hash = string(data[offset : offset+int(hashLen)])
+	offset += int(hashLen)
+	challengeLen := decodeUint32(data[offset : offset+4])
+	offset += 4
+	if challengeLen > 0 && offset+int(challengeLen) <= len(data) {
+		resp.ServerChallenge = data[offset : offset+int(challengeLen)]
+	}
+	return resp, nil
+}
+
+// SerializeConfirm serializes HandshakeConfirm to bytes.
+func SerializeConfirm(confirm *HandshakeConfirm) ([]byte, error) {
+	if confirm == nil {
+		return nil, ErrInvalidSessionID
+	}
+	result := make([]byte, 0)
+	result = append(result, encodeInt64(confirm.Timestamp)...)
+	result = append(result, encodeUint16(uint16(len(confirm.SessionID)))...)
+	result = append(result, []byte(confirm.SessionID)...)
+	result = append(result, encodeUint32(uint32(len(confirm.ChallengeResponse)))...)
+	result = append(result, confirm.ChallengeResponse...)
+	return result, nil
+}
+
+// DeserializeConfirm deserializes bytes to HandshakeConfirm.
+func DeserializeConfirm(data []byte) (*HandshakeConfirm, error) {
+	if len(data) < 14 {
+		return nil, ErrInvalidSessionID
+	}
+	offset := 0
+	_ = decodeInt64(data[offset : offset+8]) // timestamp, not used in construction
+	offset += 8
+	sessionIDLen := decodeUint16(data[offset : offset+2])
+	offset += 2
+	sessionID := string(data[offset : offset+int(sessionIDLen)])
+	offset += int(sessionIDLen)
+	challengeLen := decodeUint32(data[offset : offset+4])
+	offset += 4
+	challengeResponse := data[offset : offset+int(challengeLen)]
+	return NewHandshakeConfirm(sessionID, challengeResponse), nil
+}
+
+// Helper encoding functions
+func encodeInt64(v int64) []byte {
+	result := make([]byte, 8)
+	for i := 0; i < 8; i++ {
+		result[i] = byte(v >> (56 - i*8))
+	}
+	return result
+}
+
+func decodeInt64(data []byte) int64 {
+	result := int64(0)
+	for i := 0; i < 8; i++ {
+		result |= int64(data[i]) << (56 - i*8)
+	}
+	return result
+}
+
+func encodeUint16(v uint16) []byte {
+	return []byte{byte(v >> 8), byte(v)}
+}
+
+func decodeUint16(data []byte) uint16 {
+	return uint16(data[0])<<8 | uint16(data[1])
+}
+
+func encodeUint32(v uint32) []byte {
+	return []byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)}
+}
+
+func decodeUint32(data []byte) uint32 {
+	return uint32(data[0])<<24 | uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
 }

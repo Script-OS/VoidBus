@@ -14,15 +14,15 @@ import (
 	"testing"
 	"time"
 
-	"VoidBus/channel"
-	"VoidBus/channel/tcp"
-	"VoidBus/codec"
-	"VoidBus/codec/aes"
-	"VoidBus/codec/base64"
-	"VoidBus/codec/plain"
-	"VoidBus/core"
-	"VoidBus/keyprovider/embedded"
-	plainserializer "VoidBus/serializer/plain"
+	"github.com/Script-OS/VoidBus/channel"
+	"github.com/Script-OS/VoidBus/channel/tcp"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/codec/aes"
+	"github.com/Script-OS/VoidBus/codec/base64"
+	"github.com/Script-OS/VoidBus/codec/plain"
+	"github.com/Script-OS/VoidBus/core"
+	"github.com/Script-OS/VoidBus/keyprovider/embedded"
+	plainserializer "github.com/Script-OS/VoidBus/serializer/plain"
 )
 
 // getFreePort returns a free TCP port

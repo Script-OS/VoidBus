@@ -11,7 +11,7 @@ package json
 import (
 	"encoding/json"
 
-	"VoidBus/serializer"
+	"github.com/Script-OS/VoidBus/serializer"
 )
 
 const (

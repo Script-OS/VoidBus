@@ -18,12 +18,14 @@ import (
 	"sync"
 	"time"
 
-	"VoidBus/channel"
-	"VoidBus/codec"
-	"VoidBus/fragment"
-	"VoidBus/internal"
-	"VoidBus/keyprovider"
-	"VoidBus/serializer"
+	"github.com/Script-OS/VoidBus/channel"
+	"github.com/Script-OS/VoidBus/channel/selector"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/fragment"
+	"github.com/Script-OS/VoidBus/internal"
+	"github.com/Script-OS/VoidBus/keyprovider"
+	"github.com/Script-OS/VoidBus/protocol"
+	"github.com/Script-OS/VoidBus/serializer"
 )
 
 // MultiBus errors
@@ -47,6 +49,10 @@ type MultiBus struct {
 
 	// Channel pool
 	channels []*ChannelInfo
+
+	// Channel selection and distribution
+	selector    protocol.ChannelSelector
+	distributor protocol.FragmentDistributor
 
 	// Configuration
 	config MultiBusConfig
@@ -77,13 +83,21 @@ func NewMultiBus() *MultiBus {
 
 // NewMultiBusWithConfig creates a new MultiBus with specified configuration.
 func NewMultiBusWithConfig(config MultiBusConfig) *MultiBus {
-	return &MultiBus{
+	mb := &MultiBus{
 		config:          config,
 		stopCh:          make(chan struct{}),
 		sessionID:       internal.GenerateSessionID(),
 		channels:        make([]*ChannelInfo, 0),
 		fragmentManager: fragment.NewFragmentManager(fragment.DefaultFragmentConfig()),
 	}
+
+	// Initialize selector based on strategy
+	mb.selector = selector.CreateSelector(mb.config.SelectionStrategy.ToDistributionStrategy())
+
+	// Initialize distributor
+	mb.distributor = protocol.CreateDistributor(mb.config.SelectionStrategy.ToDistributionStrategy())
+
+	return mb
 }
 
 // SetSerializer sets the serializer.
@@ -119,6 +133,22 @@ func (m *MultiBus) SetKeyProvider(kp keyprovider.KeyProvider) *MultiBus {
 	if m.codecChain != nil {
 		m.codecChain.SetKeyProvider(kp)
 	}
+	return m
+}
+
+// SetSelector sets the channel selector.
+func (m *MultiBus) SetSelector(s protocol.ChannelSelector) *MultiBus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.selector = s
+	return m
+}
+
+// SetDistributor sets the fragment distributor.
+func (m *MultiBus) SetDistributor(d protocol.FragmentDistributor) *MultiBus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.distributor = d
 	return m
 }
 
@@ -334,7 +364,31 @@ func (m *MultiBus) selectChannel() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Filter active channels
+	// Build channel select info list
+	channelInfos := make([]protocol.ChannelSelectInfo, 0, len(m.channels))
+	for _, info := range m.channels {
+		channelInfos = append(channelInfos, protocol.ChannelSelectInfo{
+			Index:        info.Index,
+			Weight:       info.Weight,
+			Status:       int(info.Status),
+			IsConnected:  info.Channel != nil && info.Channel.IsConnected(),
+			LastActivity: info.LastActivity,
+			SendCount:    info.SendCount,
+			ReceiveCount: info.ReceiveCount,
+			ErrorCount:   info.ErrorCount,
+		})
+	}
+
+	// Use selector if available
+	if m.selector != nil {
+		idx, err := m.selector.Select(channelInfos)
+		if err == nil {
+			return idx
+		}
+		// Fall through to default selection on error
+	}
+
+	// Fallback: filter active channels
 	activeChannels := make([]*ChannelInfo, 0)
 	for _, info := range m.channels {
 		if info.Status == ChannelStatusActive && info.Channel != nil && info.Channel.IsConnected() {
@@ -348,16 +402,13 @@ func (m *MultiBus) selectChannel() int {
 
 	switch m.config.SelectionStrategy {
 	case StrategyRandom:
-		// Random selection
 		return activeChannels[rand.Intn(len(activeChannels))].Index
 
 	case StrategyRoundRobin:
-		// Round-robin selection
 		m.roundRobinIndex = (m.roundRobinIndex + 1) % len(activeChannels)
 		return activeChannels[m.roundRobinIndex].Index
 
 	case StrategyWeighted:
-		// Weighted selection (weighted random)
 		totalWeight := 0
 		for _, info := range activeChannels {
 			totalWeight += info.Weight
@@ -375,7 +426,6 @@ func (m *MultiBus) selectChannel() int {
 		return activeChannels[0].Index
 
 	case StrategySpecified:
-		// Specified channel
 		if m.config.SpecifiedChannelIndex >= 0 && m.config.SpecifiedChannelIndex < len(activeChannels) {
 			return activeChannels[m.config.SpecifiedChannelIndex].Index
 		}
