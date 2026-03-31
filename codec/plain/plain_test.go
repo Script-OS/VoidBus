@@ -3,7 +3,7 @@ package plain
 import (
 	"testing"
 
-	"github.com/Script-OS/VoidBus/codec"
+	"VoidBus/codec"
 )
 
 func TestCodec_Encode(t *testing.T) {

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Script-OS/VoidBus/keyprovider"
-	"github.com/Script-OS/VoidBus/keyprovider/embedded"
+	"VoidBus/keyprovider"
+	"VoidBus/keyprovider/embedded"
 )
 
 func TestNewChain(t *testing.T) {

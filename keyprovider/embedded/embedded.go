@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Script-OS/VoidBus/internal"
-	"github.com/Script-OS/VoidBus/keyprovider"
+	"VoidBus/internal"
+	"VoidBus/keyprovider"
 )
 
 // Provider implements keyprovider.KeyProvider with embedded key storage.

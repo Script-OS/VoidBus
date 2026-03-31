@@ -14,7 +14,7 @@ package codec
 import (
 	"errors"
 
-	"github.com/Script-OS/VoidBus/keyprovider"
+	"VoidBus/keyprovider"
 )
 
 // SecurityLevel defines the security level of a codec.

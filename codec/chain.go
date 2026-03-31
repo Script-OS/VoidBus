@@ -15,7 +15,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/Script-OS/VoidBus/keyprovider"
+	"VoidBus/keyprovider"
 )
 
 // Chain errors

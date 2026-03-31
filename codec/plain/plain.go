@@ -13,7 +13,7 @@
 package plain
 
 import (
-	"github.com/Script-OS/VoidBus/codec"
+	"VoidBus/codec"
 )
 
 const (

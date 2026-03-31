@@ -21,8 +21,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/Script-OS/VoidBus/fragment"
-	"github.com/Script-OS/VoidBus/internal"
+	"VoidBus/fragment"
+	"VoidBus/internal"
 )
 
 // Packet errors

@@ -1,4 +1,4 @@
-module github.com/Script-OS/VoidBus
+module VoidBus
 
 go 1.24
 

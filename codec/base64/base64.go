@@ -14,7 +14,7 @@ package base64
 import (
 	"encoding/base64"
 
-	"github.com/Script-OS/VoidBus/codec"
+	"VoidBus/codec"
 )
 
 const (
