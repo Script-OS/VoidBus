@@ -230,16 +230,17 @@ func (b *Bus) Start() error {
 
 // Stop stops the bus.
 func (b *Bus) Stop() error {
+	// First, signal stop without lock (to allow sendLoop to exit)
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	if !b.running {
+		b.mu.Unlock()
 		return errors.New("bus: not running")
 	}
-
 	b.running = false
 	close(b.stopCh)
+	b.mu.Unlock()
 
+	// Now close channel (sendLoop should have exited)
 	if b.channel != nil {
 		return b.channel.Close()
 	}
