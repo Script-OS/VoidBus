@@ -163,6 +163,11 @@ func (s *ServerBus) Start() error {
 		return ErrServerBusAlreadyRunning
 	}
 
+	// Validate configuration
+	if err := s.config.Validate(); err != nil {
+		return err
+	}
+
 	// Validate required modules
 	if s.serverChannel == nil {
 		return ErrServerChannelRequired
@@ -643,3 +648,10 @@ func (b *ServerBusBuilder) BuildAndStart() (*ServerBus, error) {
 	err := sb.Start()
 	return sb, err
 }
+
+// Verify interface compliance
+var (
+	_ ServerBusInterface = (*ServerBus)(nil)
+	// Note: ServerBus methods return *ServerBus for method chaining
+	// ServerBusConfigurer is intentionally not implemented to maintain fluent API
+)

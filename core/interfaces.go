@@ -14,6 +14,8 @@
 package core
 
 import (
+	"errors"
+
 	"github.com/Script-OS/VoidBus/channel"
 	"github.com/Script-OS/VoidBus/codec"
 	"github.com/Script-OS/VoidBus/fragment"
@@ -314,6 +316,24 @@ func DefaultServerBusConfig() ServerBusConfig {
 	}
 }
 
+// Validate validates the ServerBusConfig.
+// Returns error if configuration contains invalid values.
+func (c ServerBusConfig) Validate() error {
+	if c.MaxClients < 0 {
+		return errors.New("serverbus: MaxClients must be non-negative")
+	}
+	if c.HandshakeTimeout < 1 {
+		return errors.New("serverbus: HandshakeTimeout must be at least 1 second")
+	}
+	if c.ClientTimeout < 0 {
+		return errors.New("serverbus: ClientTimeout must be non-negative")
+	}
+	if c.CleanupInterval < 0 {
+		return errors.New("serverbus: CleanupInterval must be non-negative")
+	}
+	return nil
+}
+
 // MultiBusConfig provides configuration for MultiBus.
 type MultiBusConfig struct {
 	// SelectionStrategy is the channel selection strategy
@@ -365,4 +385,28 @@ func DefaultMultiBusConfig() MultiBusConfig {
 		MaxReconnectAttempts:  0,
 		EnableChecksum:        true,
 	}
+}
+
+// Validate validates the MultiBusConfig.
+// Returns error if configuration contains invalid values.
+func (c MultiBusConfig) Validate() error {
+	if c.MaxFragmentSize < 64 || c.MaxFragmentSize > 65536 {
+		return errors.New("multibus: MaxFragmentSize must be between 64 and 65536")
+	}
+	if c.SendQueueSize < 0 {
+		return errors.New("multibus: SendQueueSize must be positive")
+	}
+	if c.ReceiveWorkers < 1 {
+		return errors.New("multibus: ReceiveWorkers must be at least 1")
+	}
+	if c.FragmentTimeout < 0 {
+		return errors.New("multibus: FragmentTimeout must be positive")
+	}
+	if c.ReconnectDelay < 0 {
+		return errors.New("multibus: ReconnectDelay must be positive")
+	}
+	if c.SpecifiedChannelIndex < 0 {
+		return errors.New("multibus: SpecifiedChannelIndex must be non-negative")
+	}
+	return nil
 }

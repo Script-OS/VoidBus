@@ -194,6 +194,11 @@ func (m *MultiBus) Start() error {
 		return ErrMultiBusAlreadyRunning
 	}
 
+	// Validate configuration
+	if err := m.config.Validate(); err != nil {
+		return err
+	}
+
 	// Validate required modules
 	if m.serializer == nil {
 		return errors.New("multibus: serializer required")
@@ -731,3 +736,10 @@ func (b *MultiBusBuilder) BuildAndStart() (*MultiBus, error) {
 	err := mb.Start()
 	return mb, err
 }
+
+// Verify interface compliance
+var (
+	_ MultiBusInterface = (*MultiBus)(nil)
+	// Note: MultiBus methods return *MultiBus for method chaining
+	// MultiBusConfigurer is intentionally not implemented to maintain fluent API
+)

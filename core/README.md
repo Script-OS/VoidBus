@@ -247,3 +247,98 @@ multiBus.Start()
 multiBus.Send([]byte("Large data..."))       // 加权随机发送
 multiBus.SendVia("primary", []byte("Important")) // 指定信道发送
 ```
+
+## 数据流规范
+
+### 发送流程 (Send)
+
+```
+原始数据
+    ↓
+Serializer.Serialize()    // 序列化
+    ↓
+CodecChain.Encode()       // 编码/加密
+    ↓
+[Fragment.Split()]        // 分片（可选）
+    ↓
+Channel.Send()            // 发送
+```
+
+### 接收流程 (Receive)
+
+```
+Channel.Receive()         // 接收
+    ↓
+[FragmentManager.Reassemble()]  // 重组（可选）
+    ↓
+CodecChain.Decode()       // 解码/解密
+    ↓
+Serializer.Deserialize()  // 反序列化
+    ↓
+原始数据
+```
+
+## Handshake 安全机制
+
+ServerBus 使用三步握手协议，包含 Challenge 机制防止降级攻击：
+
+```
+Client                              Server
+   │                                   │
+   │──── HandshakeRequest ────────────>│  (支持的Serializer/CodecChain)
+   │                                   │
+   │<─── HandshakeResponse ───────────│  (接受/拒绝 + Challenge)
+   │                                   │
+   │──── HandshakeConfirm ───────────>│  (ChallengeResponse)
+   │                                   │
+   │<─── Session Established ─────────│
+```
+
+### Challenge 验证流程
+
+1. Server 生成 32 字节随机 Challenge
+2. Client 使用协商的 CodecChain 编码 Challenge
+3. Server 解码并比对原始 Challenge
+4. 验证通过则建立 Session
+
+### Release 模式安全约束
+
+**重要**：Release 模式必须满足以下安全要求：
+
+```go
+// Release 模式必须使用 DefaultNegotiationPolicy()
+policy := protocol.DefaultNegotiationPolicy()
+// MinSecurityLevel = SecurityLevelMedium (强制)
+// DebugMode = false (强制)
+// AllowPlaintextInDebug = false (强制)
+```
+
+违反约束的连接将被拒绝，触发 `ErrDegradationAttack` 错误。
+
+## 架构约束清单
+
+| 约束 | 说明 | 验证点 |
+|------|------|--------|
+| Bus 不负责具体实现 | 仅协调模块接口调用 | `bus.go` 无具体逻辑 |
+| Serializer.Name 可暴露 | 用于协商 | `ClientInfo.Serializer` |
+| CodecChain 配置不可暴露 | 仅暴露 SecurityLevel | `CodecChainInfo` |
+| Channel 配置不可暴露 | 不在 metadata 中暴露 | 无 Channel 配置字段 |
+| Challenge 防降级攻击 | 验证客户端 Codec 能力 | `handshake.go:ProcessConfirm` |
+| Release MinSecurityLevel >= Medium | 强制安全级别 | `policy.go:DefaultNegotiationPolicy` |
+| MultiBus 支持四种策略 | Random/RoundRobin/Weighted/Specified | `interfaces.go` |
+| Selector/Distributor 接口 | 分片分配策略抽象 | `protocol/selector.go`, `protocol/distributor.go` |
+
+## 接口实现验证
+
+所有核心结构实现了对应接口：
+
+```go
+// Bus 实现 BusInterface
+var _ BusInterface = (*Bus)(nil)
+
+// ServerBus 实现 ServerBusInterface
+var _ ServerBusInterface = (*ServerBus)(nil)
+
+// MultiBus 实现 MultiBusInterface
+var _ MultiBusInterface = (*MultiBus)(nil)
+```

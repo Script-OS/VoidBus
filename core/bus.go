@@ -76,6 +76,27 @@ func DefaultBusConfig() BusConfig {
 	}
 }
 
+// Validate validates the BusConfig.
+// Returns error if configuration contains invalid values.
+func (c BusConfig) Validate() error {
+	if c.MaxFragmentSize < 64 || c.MaxFragmentSize > 65536 {
+		return errors.New("bus: MaxFragmentSize must be between 64 and 65536")
+	}
+	if c.SendQueueSize < 0 {
+		return errors.New("bus: SendQueueSize must be positive")
+	}
+	if c.RecvQueueSize < 0 {
+		return errors.New("bus: RecvQueueSize must be positive")
+	}
+	if c.FragmentTimeout < 0 {
+		return errors.New("bus: FragmentTimeout must be positive")
+	}
+	if c.ReconnectDelay < 0 {
+		return errors.New("bus: ReconnectDelay must be positive")
+	}
+	return nil
+}
+
 // Bus is the core structure that coordinates all modules.
 type Bus struct {
 	mu sync.RWMutex
@@ -192,6 +213,11 @@ func (b *Bus) Start() error {
 
 	if b.running {
 		return errors.New("bus: already running")
+	}
+
+	// Validate configuration
+	if err := b.config.Validate(); err != nil {
+		return err
 	}
 
 	// Validate required modules
@@ -590,5 +616,8 @@ func (b *BusBuilder) BuildAndStart() (*Bus, error) {
 
 // Verify interface compliance
 var (
-	_ = time.Duration(0)
+	_ BusInterface = (*Bus)(nil)
+	// Note: Bus methods return *Bus for method chaining, not interface{}
+	// BusConfigurer is intentionally not implemented to maintain fluent API
+	_ = time.Duration(0) // suppress unused import warning
 )
