@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"testing"
 
-	"VoidBus/codec"
+	"github.com/Script-OS/VoidBus/codec"
 )
 
 func TestCodec_Encode(t *testing.T) {

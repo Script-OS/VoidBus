@@ -17,8 +17,8 @@ import (
 	"errors"
 	"time"
 
-	"VoidBus/codec"
-	"VoidBus/internal"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/internal"
 )
 
 // Handshake errors

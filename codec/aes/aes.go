@@ -24,8 +24,8 @@ import (
 	"errors"
 	"io"
 
-	"VoidBus/codec"
-	"VoidBus/keyprovider"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/keyprovider"
 )
 
 const (

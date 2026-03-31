@@ -16,7 +16,7 @@ import (
 	"errors"
 	"time"
 
-	"VoidBus/codec"
+	"github.com/Script-OS/VoidBus/codec"
 )
 
 // Policy errors

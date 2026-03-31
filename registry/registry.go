@@ -16,11 +16,11 @@ import (
 	"sync"
 	"time"
 
-	"VoidBus/channel"
-	"VoidBus/codec"
-	"VoidBus/fragment"
-	"VoidBus/keyprovider"
-	"VoidBus/serializer"
+	"github.com/Script-OS/VoidBus/channel"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/fragment"
+	"github.com/Script-OS/VoidBus/keyprovider"
+	"github.com/Script-OS/VoidBus/serializer"
 )
 
 // Session registry errors

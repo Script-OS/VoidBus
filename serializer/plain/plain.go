@@ -13,7 +13,7 @@
 package plain
 
 import (
-	"VoidBus/serializer"
+	"github.com/Script-OS/VoidBus/serializer"
 )
 
 const (

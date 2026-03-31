@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"VoidBus/channel"
-	"VoidBus/internal"
+	"github.com/Script-OS/VoidBus/channel"
+	"github.com/Script-OS/VoidBus/internal"
 )
 
 const (

@@ -17,12 +17,12 @@ import (
 	"sync"
 	"time"
 
-	"VoidBus/channel"
-	"VoidBus/codec"
-	"VoidBus/internal"
-	"VoidBus/keyprovider"
-	"VoidBus/protocol"
-	"VoidBus/serializer"
+	"github.com/Script-OS/VoidBus/channel"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/internal"
+	"github.com/Script-OS/VoidBus/keyprovider"
+	"github.com/Script-OS/VoidBus/protocol"
+	"github.com/Script-OS/VoidBus/serializer"
 )
 
 // ServerBus errors

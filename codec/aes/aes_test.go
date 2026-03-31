@@ -4,9 +4,9 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"VoidBus/codec"
-	"VoidBus/keyprovider"
-	"VoidBus/keyprovider/embedded"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/keyprovider"
+	"github.com/Script-OS/VoidBus/keyprovider/embedded"
 )
 
 // Helper to create valid key provider
