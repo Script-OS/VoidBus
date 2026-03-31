@@ -129,8 +129,13 @@ func HighSecurityNegotiationPolicy() NegotiationPolicy {
 	}
 }
 
-// Validate validates the policy configuration.
-func (p NegotiationPolicy) Validate() error {
+// Validate validates and normalizes the policy configuration.
+// Uses pointer receiver to allow modification of fields with invalid values.
+func (p *NegotiationPolicy) Validate() error {
+	if p == nil {
+		return ErrInvalidPolicy
+	}
+
 	// Security level must be valid
 	if p.MinSecurityLevel < codec.SecurityLevelNone || p.MinSecurityLevel > codec.SecurityLevelHigh {
 		return ErrInvalidPolicy
@@ -142,13 +147,13 @@ func (p NegotiationPolicy) Validate() error {
 	}
 
 	// Timeouts must be positive
-	if p.ChallengeTimeout < 0 {
+	if p.ChallengeTimeout <= 0 {
 		p.ChallengeTimeout = 30 * time.Second
 	}
-	if p.HandshakeTimeout < 0 {
+	if p.HandshakeTimeout <= 0 {
 		p.HandshakeTimeout = 60 * time.Second
 	}
-	if p.SessionTimeout < 0 {
+	if p.SessionTimeout <= 0 {
 		p.SessionTimeout = 30 * time.Minute
 	}
 

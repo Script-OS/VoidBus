@@ -61,6 +61,7 @@ var (
 	ErrDecodingFailed     = errors.New("codec: decoding failed")
 	ErrCodecNotFound      = errors.New("codec: not found")
 	ErrCodecConflict      = errors.New("codec: codec conflict")
+	// Note: ErrChainTooLong and ErrInvalidIndex are defined in chain.go
 )
 
 // Codec is the core interface for encoding/decoding operations.

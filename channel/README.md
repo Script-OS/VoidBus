@@ -10,9 +10,23 @@
 channel/
 ├── interface.go      # Channel接口定义
 ├── channel.go        # ChannelRegistry, ServerChannelRegistry
+├── selector/         # 信道选择策略实现
+│   └── selector.go   # Random/RoundRobin/Weighted/HealthAware Selector
 └── tcp/              # TCP传输实现
     └── tcp.go
 ```
+
+## 新增模块
+
+### selector/selector.go
+
+**职责**：
+- RandomSelector：随机选择信道
+- RoundRobinSelector：轮询选择
+- WeightedSelector：加权随机选择
+- HealthAwareSelector：基于健康状态选择
+
+**设计**：实现 protocol.ChannelSelector 接口，使用 ChannelSelectInfo 避免循环依赖
 
 ## 模块职责
 

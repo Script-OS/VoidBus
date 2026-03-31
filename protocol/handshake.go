@@ -14,6 +14,8 @@
 package protocol
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"time"
 
@@ -341,20 +343,13 @@ func (m *HandshakeManager) ProcessConfirm(confirm *HandshakeConfirm) (*Handshake
 	}
 
 	// Verify challenge response
-	// In a real implementation, this would encode the challenge with the selected codec chain
-	// For now, we use simple verification
+	// Current implementation uses SHA-256 hash for verification.
+	// Production systems should use CodecChain.Encode() with the selected chain.
+	// See simpleChallengeResponse documentation for more details.
 	expectedResponse := simpleChallengeResponse(state.Challenge)
 
-	// Compare responses (constant-time comparison would be better for crypto)
-	match := len(confirm.ChallengeResponse) == len(expectedResponse)
-	if match {
-		for i := range expectedResponse {
-			if confirm.ChallengeResponse[i] != expectedResponse[i] {
-				match = false
-				break
-			}
-		}
-	}
+	// Use constant-time comparison to prevent timing attacks
+	match := subtle.ConstantTimeCompare(confirm.ChallengeResponse, expectedResponse) == 1
 
 	if !match {
 		state.Status = HandshakeStatusFailed
@@ -452,14 +447,31 @@ func (m *HandshakeManager) selectCodecChain(chains []CodecChainInfo) CodecChainI
 	return best
 }
 
-// simpleChallengeResponse creates a simple challenge response.
-// In real implementation, this would encode with the selected codec chain.
+// simpleChallengeResponse creates a challenge response using SHA-256.
+//
+// IMPORTANT: This is a simplified implementation. Production systems should:
+// 1. Use the selected CodecChain.Encode() to process the challenge
+// 2. Store the selected CodecChain instance in HandshakeState
+// 3. Verify the response using CodecChain.Decode()
+//
+// The current implementation uses SHA-256 for basic challenge verification.
+// This provides integrity verification but NOT the full security proof that
+// CodecChain encoding would provide.
+//
+// TODO: Refactor to store CodecChain instance in HandshakeState and use
+// CodecChain.Encode() for challenge processing. This requires:
+// - HandshakeManager to have access to codec.ChainRegistry
+// - HandshakeState to store selected CodecChain instance
+// - ProcessConfirm to use stored CodecChain for verification
 func simpleChallengeResponse(challenge []byte) []byte {
-	// Simple SHA256 hash for demonstration
-	// Real implementation should use the selected codec chain
-	result := make([]byte, 32)
-	copy(result, challenge)
-	return result
+	if len(challenge) == 0 {
+		return nil
+	}
+
+	// Use SHA-256 to create a deterministic response
+	// This is better than simple copy but not as secure as CodecChain encoding
+	hash := sha256.Sum256(challenge)
+	return hash[:]
 }
 
 // CleanupExpired removes expired handshake states.

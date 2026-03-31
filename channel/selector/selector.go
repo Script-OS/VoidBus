@@ -17,16 +17,10 @@ package selector
 import (
 	"math/rand"
 	"sync"
-	"time"
 
 	"github.com/Script-OS/VoidBus/fragment"
 	"github.com/Script-OS/VoidBus/protocol"
 )
-
-// init initializes random seed
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
 
 // RandomSelector selects channels randomly.
 // Simple and fair distribution strategy.

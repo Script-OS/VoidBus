@@ -13,6 +13,7 @@ package codec
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/Script-OS/VoidBus/keyprovider"
@@ -30,7 +31,11 @@ var (
 
 // CodecChain interface for chaining multiple codecs.
 type CodecChain interface {
-	// AddCodec adds a codec to the end of the chain.
+	// AddCodec adds a codec to the end of the chain (fluent API).
+	//
+	// Design Note: This method uses fluent API pattern and silently
+	// returns the original chain if limit exceeded. For explicit error
+	// handling, use AddCodecWithErr.
 	//
 	// Parameter Constraints:
 	//   - codec: MUST be valid Codec instance
@@ -38,13 +43,27 @@ type CodecChain interface {
 	//
 	// Return Guarantees:
 	//   - Returns updated CodecChain (supports fluent API)
-	//
-	// Error Types:
-	//   - ErrChainTooLong: chain exceeds limit
-	//   - ErrCodecConflict: codec conflicts with existing
+	//   - Silently returns original chain if limit exceeded
 	AddCodec(codec Codec) CodecChain
 
-	// AddCodecAt adds a codec at specified position.
+	// AddCodecWithErr adds a codec to the end of the chain with explicit error.
+	//
+	// Parameter Constraints:
+	//   - codec: MUST be valid Codec instance
+	//   - Chain length limited by NegotiationPolicy.MaxCodecChainLength (default 5)
+	//
+	// Return Guarantees:
+	//   - Returns updated CodecChain
+	//
+	// Error Types:
+	//   - ErrChainTooLong: chain exceeds limit (>=5 codecs)
+	AddCodecWithErr(codec Codec) (CodecChain, error)
+
+	// AddCodecAt adds a codec at specified position (fluent API).
+	//
+	// Design Note: This method uses fluent API pattern and silently
+	// returns the original chain if index invalid. For explicit error
+	// handling, use AddCodecAtWithErr.
 	//
 	// Parameter Constraints:
 	//   - codec: MUST be valid Codec instance
@@ -52,7 +71,22 @@ type CodecChain interface {
 	//
 	// Return Guarantees:
 	//   - Codec inserted at specified position
+	//   - Silently returns original chain if index invalid
 	AddCodecAt(codec Codec, index int) CodecChain
+
+	// AddCodecAtWithErr adds a codec at specified position with explicit error.
+	//
+	// Parameter Constraints:
+	//   - codec: MUST be valid Codec instance
+	//   - index: 0 to current chain length
+	//
+	// Return Guarantees:
+	//   - Codec inserted at specified position
+	//
+	// Error Types:
+	//   - ErrInvalidIndex: index out of bounds
+	//   - ErrChainTooLong: chain exceeds limit
+	AddCodecAtWithErr(codec Codec, index int) (CodecChain, error)
 
 	// RemoveCodecAt removes codec at specified position.
 	//
@@ -146,7 +180,8 @@ func NewChainWithCodecs(codecs ...Codec) *DefaultChain {
 	return chain
 }
 
-// AddCodec adds a codec to the end of the chain.
+// AddCodec adds a codec to the end of the chain (fluent API).
+// Silently returns original chain if limit exceeded.
 func (c *DefaultChain) AddCodec(codec Codec) CodecChain {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -154,7 +189,7 @@ func (c *DefaultChain) AddCodec(codec Codec) CodecChain {
 	// Check length limit (default max 5)
 	if len(c.codecs) >= 5 {
 		// Note: actual limit should be from NegotiationPolicy
-		// This is a default safeguard
+		// This is a default safeguard - fluent API silently returns
 		return c
 	}
 
@@ -162,7 +197,22 @@ func (c *DefaultChain) AddCodec(codec Codec) CodecChain {
 	return c
 }
 
-// AddCodecAt adds a codec at specified position.
+// AddCodecWithErr adds a codec to the end of the chain with explicit error.
+func (c *DefaultChain) AddCodecWithErr(codec Codec) (CodecChain, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Check length limit (default max 5)
+	if len(c.codecs) >= 5 {
+		return c, ErrChainTooLong
+	}
+
+	c.codecs = append(c.codecs, codec)
+	return c, nil
+}
+
+// AddCodecAt adds a codec at specified position (fluent API).
+// Silently returns original chain if index invalid or limit exceeded.
 func (c *DefaultChain) AddCodecAt(codec Codec, index int) CodecChain {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -179,6 +229,25 @@ func (c *DefaultChain) AddCodecAt(codec Codec, index int) CodecChain {
 	// Insert at position
 	c.codecs = append(c.codecs[:index], append([]Codec{codec}, c.codecs[index:]...)...)
 	return c
+}
+
+// AddCodecAtWithErr adds a codec at specified position with explicit error.
+func (c *DefaultChain) AddCodecAtWithErr(codec Codec, index int) (CodecChain, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if index < 0 || index > len(c.codecs) {
+		return c, ErrInvalidIndex
+	}
+
+	// Check length limit
+	if len(c.codecs) >= 5 {
+		return c, ErrChainTooLong
+	}
+
+	// Insert at position
+	c.codecs = append(c.codecs[:index], append([]Codec{codec}, c.codecs[index:]...)...)
+	return c, nil
 }
 
 // RemoveCodecAt removes codec at specified position.
@@ -207,7 +276,7 @@ func (c *DefaultChain) Encode(data []byte) ([]byte, error) {
 	for i, codec := range c.codecs {
 		encoded, err := codec.Encode(result)
 		if err != nil {
-			return nil, errors.New("codec chain encode at index " + string(rune('0'+i)) + ": " + err.Error())
+			return nil, fmt.Errorf("codec chain encode at index %d: %w", i, err)
 		}
 		result = encoded
 	}
@@ -227,7 +296,7 @@ func (c *DefaultChain) Decode(data []byte) ([]byte, error) {
 	for i := len(c.codecs) - 1; i >= 0; i-- {
 		decoded, err := c.codecs[i].Decode(result)
 		if err != nil {
-			return nil, errors.New("codec chain decode at index " + string(rune('0'+i)) + ": " + err.Error())
+			return nil, fmt.Errorf("codec chain decode at index %d: %w", i, err)
 		}
 		result = decoded
 	}
@@ -286,14 +355,28 @@ func (c *DefaultChain) SetKeyProvider(provider keyprovider.KeyProvider) error {
 	return nil
 }
 
-// Clone creates an independent copy of the chain.
+// Clone creates a shallow copy of the chain.
+//
+// Design Note: This method creates a shallow copy where Codec instances
+// are shared between the original and cloned chains. This is suitable for
+// Stateless Codec implementations (e.g., Base64, AES with static key).
+// If Codec instances have mutable state (e.g., dynamic KeyProvider),
+// modifications to the clone may affect the original.
+//
+// Use Cases:
+//   - Creating new sessions that reuse existing Codec configuration
+//   - Creating independent chains for parallel operations (when Codec is stateless)
+//
+// Return Guarantees:
+//   - Returns a new chain with the same Codec references
+//   - Codec instances are NOT cloned (shallow copy)
 func (c *DefaultChain) Clone() CodecChain {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	clone := NewChain()
 	clone.codecs = make([]Codec, len(c.codecs))
-	copy(clone.codecs, c.codecs)
+	copy(clone.codecs, c.codecs) // Shallow copy - Codec instances shared
 	return clone
 }
 

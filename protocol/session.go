@@ -12,6 +12,7 @@ package protocol
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Script-OS/VoidBus/channel"
@@ -417,12 +418,16 @@ func (s *Session) Send(data []byte) error {
 
 	err := s.Channel.Send(data)
 	if err != nil {
-		s.ErrorCount++
+		atomic.AddInt64(&s.ErrorCount, 1)
 		return err
 	}
 
-	s.SendCount++
+	atomic.AddInt64(&s.SendCount, 1)
+	s.mu.RUnlock() // Unlock before modifying LastActivity
+	s.mu.Lock()
 	s.LastActivity = time.Now()
+	s.mu.Unlock()
+	s.mu.RLock() // Reacquire for defer
 	return nil
 }
 
@@ -437,12 +442,16 @@ func (s *Session) Receive() ([]byte, error) {
 
 	data, err := s.Channel.Receive()
 	if err != nil {
-		s.ErrorCount++
+		atomic.AddInt64(&s.ErrorCount, 1)
 		return nil, err
 	}
 
-	s.ReceiveCount++
+	atomic.AddInt64(&s.ReceiveCount, 1)
+	s.mu.RUnlock() // Unlock before modifying LastActivity
+	s.mu.Lock()
 	s.LastActivity = time.Now()
+	s.mu.Unlock()
+	s.mu.RLock() // Reacquire for defer
 	return data, nil
 }
 

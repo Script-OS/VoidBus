@@ -583,3 +583,167 @@ VoidBus/
 - Channel层：支持至少1Gbps吞吐量
 - Fragment层：分片/重组延迟<5ms
 - Bus层：组装和路由延迟<1ms
+
+## 7. 实现状态与审查记录
+
+### 7.1 已实现模块清单
+
+| 模块 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| **Protocol** | | | |
+| session.go | Session状态管理 | ✅ 完成 | Handshaking/Active/Idle/Closing/Closed |
+| control.go | 控制消息 | ✅ 完成 | ACK/NACK/Heartbeat/Ping/Pong |
+| selector.go | 信道选择接口 | ✅ 完成 | ChannelSelectInfo避免循环依赖 |
+| distributor.go | 分片分发策略 | ✅ 完成 | 5种策略实现 |
+| transport.go | 传输层 | ✅ 完成 | TransportSender/TransportReceiver |
+| negotiator.go | 协商流程 | ✅ 完成 | Client/Server Negotiator |
+| handshake.go | Handshake消息 | ✅ 完成 | 序列化方法 |
+| packet.go | Packet结构 | ✅ 完成 | Header/Payload |
+| policy.go | 协商策略 | ✅ 完成 | NegotiationPolicy |
+| message.go | 消息抽象 | ✅ 完成 | Message/FragmentMetadata |
+| **Codec** | | | |
+| interface.go | Codec接口 | ✅ 完成 | Codec/KeyAwareCodec |
+| chain.go | CodecChain | ✅ 完成 | 链式组合 |
+| negotiation.go | Codec协商 | ✅ 完成 | CodecChainInfoGenerator |
+| plain/plain.go | Plaintext | ✅ 完成 | 仅调试用 |
+| base64/base64.go | Base64 | ✅ 完成 | Low SecurityLevel |
+| aes/aes.go | AES-GCM | ✅ 完成 | Medium/High SecurityLevel |
+| **Channel** | | | |
+| interface.go | Channel接口 | ✅ 完成 | Channel/ServerChannel |
+| channel.go | ChannelRegistry | ✅ 完成 | 模块注册 |
+| tcp/tcp.go | TCP实现 | ✅ 完成 | 客户端/服务端 |
+| selector/selector.go | 选择器实现 | ✅ 完成 | Random/RoundRobin/Weighted/HealthAware |
+| **Registry** | | | |
+| registry.go | SessionRegistry | ✅ 完成 | Session配置存储 |
+| **Core** | | | |
+| bus.go | Bus实现 | ✅ 完成 | 单信道总线 |
+| serverbus.go | ServerBus | ✅ 完成 | 服务端总线+Handshake |
+| multibus.go | MultiBus | ✅ 完成 | 多信道总线+Selector/Distributor |
+| interfaces.go | 核心接口 | ✅ 完成 | Bus/ServerBus/MultiBus |
+
+### 7.2 安全约束符合情况
+
+| 约束项 | 状态 | 验证点 |
+|--------|------|--------|
+| Codec名称不暴露 | ✅ 通过 | CodecChainInfo仅含SecurityLevel+Hash |
+| Channel类型不暴露 | ✅ 通过 | Type()仅用于内部标识 |
+| KeyProvider信息不暴露 | ✅ 通过 | 接口不含KeyProvider返回 |
+| SerializerType可暴露 | ✅ 通过 | Header.SerializerType用于协商 |
+| SessionID可暴露 | ✅ 通过 | 作为间接引用，配置存储本地 |
+| Challenge防降级攻击 | ✅ 通过 | ServerChallenge生成+验证 |
+| Release最小SecurityLevel | ✅ 通过 | DefaultPolicy=Medium |
+| Timestamp防重放 | ✅ 通过 | Packet.Timestamp+5分钟过期检查 |
+
+### 7.3 已修复问题
+
+| 问题 | 文件 | 修复内容 |
+|------|------|----------|
+| computeChainHash返回随机ID | negotiator.go | 使用SHA-256确定性哈希 |
+| distributor rand.Seed废弃 | distributor.go | 移除Go 1.20+废弃代码 |
+
+### 7.4 已知限制与待决策项
+
+| 问题 | 影响 | 建议 |
+|------|------|------|
+| AddCodec超限静默返回 | 流式API设计 | 可添加AddCodecWithErr方法返回错误 |
+| simpleChallengeResponse演示实现 | 中等安全 | 生产环境应使用CodecChain编码Challenge |
+| Clone浅拷贝 | 低 | Codec实例共享，或标注浅拷贝语义 |
+| Session错误计数RLock修改 | 低 | 使用atomic操作或改用Lock |
+| Policy Validate()值类型 | 低 | 改为指针接收者 |
+
+### 7.5 模块依赖图
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          Core Layer                              │
+│  ┌─────────┐  ┌─────────────┐  ┌───────────────┐                │
+│  │ bus.go  │  │ serverbus.go│  │ multibus.go   │                │
+│  └────┬────┘  └──────┬──────┘  └───────┬───────┘                │
+└───────┼──────────────┼─────────────────┼────────────────────────┘
+        │              │                 │
+        ▼              ▼                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        Protocol Layer                            │
+│  ┌────────────┐ ┌──────────┐ ┌─────────┐ ┌───────────────┐      │
+│  │ handshake  │ │ negotiator│ │ session │ │ transport     │      │
+│  └────────────┘ └──────────┘ └────┬────┘ └───────────────┘      │
+│  ┌────────────┐ ┌──────────┐     │     ┌───────────────┐        │
+│  │ packet     │ │ selector │     │     │ distributor   │        │
+│  └────────────┘ └──────────┘     │     └───────────────┘        │
+└─────────────────────────────────┼───────────────────────────────┘
+                                  │
+        ┌─────────────────────────┼─────────────────────────────┐
+        │                         │                              │
+        ▼                         ▼                              ▼
+┌───────────────┐     ┌───────────────────┐     ┌───────────────────┐
+│  Serializer   │     │      Codec        │     │     Channel       │
+│ ┌───────────┐ │     │ ┌───────────────┐ │     │ ┌───────────────┐ │
+│ │ plain     │ │     │ │ chain.go      │ │     │ │ tcp/tcp.go   │ │
+│ │ json      │ │     │ │ negotiation.go│ │     │ │ selector/    │ │
+│ └───────────┘ │     │ │ plain/        │ │     │ └───────────────┘ │
+│               │     │ │ base64/       │ │     │                   │
+│               │     │ │ aes/          │ │     │                   │
+│               │     │ └───────────────┘ │     │                   │
+└───────────────┘     └───────────────────┘     └───────────────────┘
+        │                     │
+        │                     ▼
+        │           ┌───────────────────┐
+        │           │   KeyProvider     │
+        │           │ ┌───────────────┐ │
+        │           │ │ embedded/     │ │
+        │           │ └───────────────┘ │
+        │           └───────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        Registry Layer                            │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │                    registry.go                             │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 7.6 数据流验证
+
+#### 发送流程
+```
+原始数据
+  → Serializer.Serialize()     [serializer/]
+  → CodecChain.Encode()        [codec/chain.go]
+    → Codec[0].Encode → Codec[1].Encode → ... → Codec[n].Encode
+  → Fragment.Split() [可选]    [fragment/]
+  → Packet.Wrap()              [protocol/packet.go]
+  → ChannelSelector.Select()   [protocol/selector.go]
+  → Channel.Send()             [channel/]
+```
+
+#### 接收流程
+```
+Channel.Receive()             [channel/]
+  → Packet.Decode()           [protocol/packet.go]
+  → Fragment.Reassemble() [可选] [fragment/]
+  → CodecChain.Decode()       [codec/chain.go]
+    → Codec[n].Decode → ... → Codec[1].Decode → Codec[0].Decode
+  → Serializer.Deserialize()  [serializer/]
+  → 原始数据
+```
+
+#### Handshake流程
+```
+Client                          Server
+  │                               │
+  │── HandshakeRequest ──────────→│
+  │   (SerializerInfo列表)         │ [protocol/handshake.go]
+  │   (CodecChainInfo列表)         │ [codec/negotiation.go]
+  │                               │
+  │←── HandshakeResponse ─────────│
+  │   (SelectedSerializer)        │
+  │   (SelectedCodecChainInfo)    │
+  │   (SessionID)                 │
+  │   (ServerChallenge)           │
+  │                               │
+  │── HandshakeConfirm ──────────→│
+  │   (ChallengeResponse)         │ [使用CodecChain编码验证]
+  │                               │
+  │←── SessionEstablished ────────│
+```

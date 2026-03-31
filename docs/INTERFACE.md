@@ -1683,3 +1683,147 @@ type OldInterface interface {
 - 1: 主版本
 - 2: 次版本（新增功能）
 - 3: 修订版本（Bug修复）
+
+---
+
+## 16. 实现状态与安全约束
+
+### 16.1 接口实现状态
+
+| 接口 | 实现文件 | 状态 | 关键方法 |
+|------|----------|------|----------|
+| Serializer | serializer/plain/plain.go | ✅ | Serialize/Deserialize/Name/Priority |
+| Codec | codec/plain/plain.go, base64/base64.go, aes/aes.go | ✅ | Encode/Decode/InternalID/SecurityLevel |
+| KeyAwareCodec | codec/aes/aes.go | ✅ | SetKeyProvider/RequiresKey/KeyAlgorithm |
+| CodecChain | codec/chain.go | ✅ | AddCodec/Encode/Decode/SecurityLevel/Clone |
+| Channel | channel/tcp/tcp.go | ✅ | Send/Receive/Close/IsConnected/Type |
+| ServerChannel | channel/tcp/tcp.go | ✅ | Accept/ListenAddress/ClientCount |
+| KeyProvider | keyprovider/embedded/embedded.go | ✅ | GetKey/RefreshKey/SupportsRefresh/Type |
+| Fragment | fragment/fragment.go | ✅ | Split/Reassemble/GetFragmentInfo |
+| FragmentManager | fragment/fragment.go | ✅ | CreateState/AddFragment/IsComplete/Reassemble |
+| Bus | core/bus.go | ✅ | Send/Receive/Start/Stop/OnMessage |
+| ServerBus | core/serverbus.go | ✅ | Listen/Start/Broadcast/SendTo/OnClientConnect |
+| MultiBus | core/multibus.go | ✅ | AddBus/Send/SendVia/SetDefaultStrategy |
+| SessionRegistry | registry/registry.go | ✅ | Register/Get/Update/Remove/List |
+| ChannelSelector | channel/selector/selector.go | ✅ | Select/SelectForFragment/Name/Reset |
+| FragmentDistributor | protocol/distributor.go | ✅ | Distribute |
+
+### 16.2 安全约束实现说明
+
+#### CodecChainInfo（不暴露Codec名称）
+
+```go
+// codec/negotiation.go
+type CodecChainInfo struct {
+    SecurityLevel SecurityLevel  // ✅ 可暴露（仅数值）
+    ChainLength   int            // ✅ 可暴露（链长度）
+    Hash          string         // ✅ 可暴露（确定性SHA-256哈希）
+    // ❌ 不暴露 InternalIDs
+    // ❌ 不暴露 Codec 名称
+}
+```
+
+**验证方法**:
+- HandshakeRequest/Response 中仅传输 CodecChainInfo
+- 具体 Codec 实例存储在本地 SessionRegistry
+- computeChainHash 使用 SHA-256 基于 SecurityLevel 计算
+
+#### Session（配置不可传输）
+
+```go
+// protocol/session.go
+type Session struct {
+    ID           string      // ✅ 可暴露（间接引用）
+    Serializer   Serializer  // ❌ 仅存储本地
+    CodecChain   CodecChain  // ❌ 仅存储本地
+    Channel      Channel     // ❌ 仅存储本地
+    KeyProvider  KeyProvider // ❌ 仅存储本地
+    Config       SessionConfig // ❌ 仅存储本地
+}
+```
+
+**验证方法**:
+- Packet.Header 仅包含 SessionID
+- SessionConfig 通过 SessionID 在本地 SessionRegistry 查找
+- Session.Serialize() 返回仅包含 ID 和统计信息的可暴露数据
+
+#### Challenge机制（防降级攻击）
+
+```go
+// protocol/handshake.go
+type HandshakeResponse struct {
+    ServerChallenge []byte  // 服务端生成随机挑战
+}
+
+type HandshakeConfirm struct {
+    ChallengeResponse []byte  // 客户端用CodecChain编码验证
+}
+```
+
+**验证流程**:
+1. Server 生成随机 Challenge (32字节)
+2. Client 用选定的 CodecChain.Encode() 处理 Challenge
+3. Server 验证 ChallengeResponse 是否正确编码
+4. 验证失败返回 ErrDegradationAttack
+
+**待改进**:
+- 当前 simpleChallengeResponse 为演示实现
+- 生产环境应使用完整 CodecChain.Encode()
+
+### 16.3 接口使用注意事项
+
+#### AddCodec/AddCodecAt（流式API设计）
+
+```go
+// codec/chain.go
+// 当前设计：静默返回原链（流式API）
+chain := codec.NewChain().
+    AddCodec(aes.NewAES256GCM()).
+    AddCodec(base64.New())
+
+// 超限时（>=5个Codec）：静默忽略新添加
+// 这是设计决策，支持链式调用
+
+// 如需错误处理，建议添加：
+type CodecChain interface {
+    // AddCodecWithErr 添加Codec并返回错误
+    // 返回 ErrChainTooLong 当链超限
+    AddCodecWithErr(codec Codec) (CodecChain, error)
+}
+```
+
+#### Clone（浅拷贝语义）
+
+```go
+// codec/chain.go
+// Clone 返回浅拷贝
+// Codec 实例共享，适用于无状态 Codec
+clone := chain.Clone()
+
+// 如 Codec 有状态（如 keyProvider），修改 clone 会影响原链
+// 使用场景：创建新 Session 时复用 Codec 配置
+```
+
+#### SecurityLevel（短板原则）
+
+```go
+// codec/chain.go
+func (c *DefaultChain) SecurityLevel() SecurityLevel {
+    // 返回链中最低安全等级
+    // 示例：AES-256(High) + Base64(Low) = Low
+    // 整体安全性由最薄弱环节决定
+}
+```
+
+### 16.4 协议版本兼容
+
+| 版本 | Packet.Version | 兼容性 |
+|------|----------------|--------|
+| v1.0 | 1 | 当前版本，所有接口稳定 |
+| v1.1 | 1 | 将支持 Fragment 增强功能 |
+| v2.0 | 2 | 可能重定义 Packet 格式 |
+
+**向后兼容策略**:
+- Version 字段用于识别协议版本
+- v2.x 可通过 Version=1 降级兼容
+- 不兼容变更需主版本号升级

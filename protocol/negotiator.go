@@ -14,6 +14,8 @@ package protocol
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"sync"
 	"time"
@@ -551,8 +553,9 @@ func generateChainInfo(chain codec.CodecChain) CodecChainInfo {
 	}
 }
 
-// computeChainHash computes a hash for codec chain configuration.
+// computeChainHash computes a deterministic hash for codec chain configuration.
 // Note: Does NOT expose codec names, only security levels.
+// Uses SHA-256 truncated to 8 bytes for efficient transmission.
 func computeChainHash(chain codec.CodecChain) string {
 	// Use security levels to compute hash
 	// This allows matching without exposing codec names
@@ -565,18 +568,18 @@ func computeChainHash(chain codec.CodecChain) string {
 		levels[i] = byte(c.SecurityLevel())
 	}
 
-	// Simple hash - in production use crypto/sha256
+	// Empty chain returns empty hash
 	if len(levels) == 0 {
 		return ""
 	}
 
-	hash := uint32(0)
-	for _, b := range levels {
-		hash = hash*31 + uint32(b)
-	}
+	// Compute SHA-256 hash of security levels
+	// This is deterministic and allows chain matching
+	hash := sha256.Sum256(levels)
 
-	// Convert to hex-like string
-	return internal.GenerateID()[:8]
+	// Return first 8 bytes as hex string (16 characters)
+	// This is sufficient for matching while keeping size small
+	return hex.EncodeToString(hash[:8])
 }
 
 // NegotiatorBuilder provides fluent API for building negotiators.

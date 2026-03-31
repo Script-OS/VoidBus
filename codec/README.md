@@ -11,6 +11,32 @@ codec/
 ├── interface.go      # Codec接口定义
 ├── codec.go          # CodecRegistry
 ├── chain.go          # CodecChain接口及实现
+├── negotiation.go    # CodecChainInfoGenerator、CodecChainRegistry、NegotiationHelper
+├── plain/            # Pass-through Codec（仅调试）
+│   └── plain.go
+├── base64/           # Base64编码
+│   └── base64.go
+└── aes/              # AES-GCM加密
+    └── aes.go
+```
+
+## 新增模块
+
+### negotiation.go
+
+**职责**：
+- CodecChainInfoGenerator：生成 CodecChainInfo（不暴露 Codec 名称）
+- CodecChainRegistry：注册和匹配 CodecChain
+- NegotiationHelper：协商辅助函数
+
+**安全设计**：
+- CodecChainInfo 仅包含 SecurityLevel、ChainLength、Hash
+- Hash 基于 SecurityLevel 计算（SHA-256），确定性
+- 不暴露 InternalIDs
+codec/
+├── interface.go      # Codec接口定义
+├── codec.go          # CodecRegistry
+├── chain.go          # CodecChain接口及实现
 ├── plain/            # Pass-through Codec（仅调试）
 │   └── plain.go
 ├── base64/           # Base64编码

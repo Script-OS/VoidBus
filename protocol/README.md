@@ -8,6 +8,12 @@
 protocol/
 ├── packet.go      # Packet/Header结构定义
 ├── handshake.go   # Handshake协议（Request/Response/Confirm）
+├── session.go     # Session状态管理
+├── control.go     # 控制消息（ACK/NACK/Heartbeat/Ping/Pong）
+├── selector.go    # ChannelSelector接口定义
+├── distributor.go # FragmentDistributor分发策略
+├── transport.go   # TransportSender/TransportReceiver
+├── negotiator.go  # Client/Server Negotiator
 ├── message.go     # Message结构定义
 └── policy.go      # NegotiationPolicy定义
 ```
@@ -237,4 +243,73 @@ policy := &protocol.NegotiationPolicy{
     RejectOnMismatch:    true,
     MaxCodecChainLength: 3,
 }
+```
+
+## 新增模块说明
+
+### Session (session.go)
+
+**职责**：
+- 管理会话状态（Handshaking/Active/Idle/Closing/Closed）
+- 存储Serializer/CodecChain/Channel配置（本地存储，不可传输）
+- 提供统计数据（SendCount/ReceiveCount/ErrorCount）
+
+**安全约束**：
+- SessionID 可暴露（间接引用）
+- 配置详情存储在本地 SessionRegistry
+
+### Control (control.go)
+
+**职责**：
+- 定义控制消息类型（Ack/Nack/Heartbeat/Disconnect/FragmentAck/FragmentNack/Ping/Pong）
+- 提供控制消息编解码
+
+**设计**：控制消息不经过 CodecChain 加密，直接发送
+
+### Selector (selector.go)
+
+**职责**：
+- 定义 ChannelSelector 接口（避免循环依赖，使用 ChannelSelectInfo）
+- 定义 FragmentDistributor 接口
+
+**ChannelSelectInfo**：包含 ID/Weight/Health/TypeAlias，不引用 raw Channel
+
+### Distributor (distributor.go)
+
+**职责**：
+- 实现 5 种分发策略（AllRandom/Grouped/RoundRobin/Weighted/HealthAware）
+- 将分片分配到不同信道
+
+### Transport (transport.go)
+
+**职责**：
+- TransportSender: PrepareData() → Send()（Serialize→Encode→Fragment→Wrap）
+- TransportReceiver: ReceiveAndProcess()（Receive→Reassemble→Decode→Deserialize）
+
+**无状态设计**：状态由 Session 管理
+
+### Negotiator (negotiator.go)
+
+**职责**：
+- ClientNegotiator: PrepareRequest() → ProcessResponse() → PrepareConfirm()
+- ServerNegotiator: ProcessRequest() → VerifyConfirm()
+
+**安全设计**：
+- computeChainHash 使用 SHA-256 确定性哈希（不暴露 Codec 名称）
+- Challenge 机制防止降级攻击
+
+## 实现状态
+
+| 文件 | 状态 | 关键特性 |
+|------|------|----------|
+| session.go | ✅ 完成 | 状态管理、统计计数 |
+| control.go | ✅ 完成 | 8种控制消息 |
+| selector.go | ✅ 完成 | ChannelSelectInfo 避免循环依赖 |
+| distributor.go | ✅ 完成 | 5种分发策略 |
+| transport.go | ✅ 完成 | Sender/Receiver 数据流 |
+| negotiator.go | ✅ 完成 | Client/Server Negotiator |
+| handshake.go | ✅ 完成 | 序列化方法 |
+| packet.go | ✅ 完成 | Header/Payload |
+| policy.go | ✅ 完成 | NegotiationPolicy |
+| message.go | ✅ 完成 | Message/FragmentMetadata |
 ```

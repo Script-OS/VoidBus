@@ -20,7 +20,6 @@ import (
 	"errors"
 	"math/rand"
 	"sync"
-	"time"
 )
 
 // Distributor errors
@@ -32,11 +31,6 @@ var (
 	// ErrInvalidWeight indicates invalid weight configuration
 	ErrInvalidWeight = errors.New("distributor: invalid weight")
 )
-
-// init initializes random seed for distributors
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
 
 // AllRandomDistributor distributes each fragment to a random channel.
 // This provides maximum diversity and fault tolerance.
