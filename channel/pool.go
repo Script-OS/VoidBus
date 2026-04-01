@@ -131,6 +131,60 @@ type ChannelPoolStats struct {
 	TotalErrors   int64
 }
 
+// GenerateChannelBitmap generates a bitmap from registered channels.
+// This is called automatically during negotiation to indicate supported channels.
+// Bitmap format follows negotiate.ChannelBit constants:
+// Bit 0=WS, 1=TCP, 2=QUIC, 3=UDP, 4=ICMP, 5=DNS, 6=HTTP
+func (p *ChannelPool) GenerateChannelBitmap() []byte {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	// Create 2-byte bitmap (16 bits for future extension)
+	bitmap := make([]byte, 2)
+
+	// Track unique channel types
+	seenTypes := make(map[ChannelType]bool)
+
+	for _, info := range p.channels {
+		if seenTypes[info.Type] {
+			continue // Already set this type
+		}
+		seenTypes[info.Type] = true
+
+		bitPos := channelTypeToBitPosition(info.Type)
+		if bitPos >= 0 && bitPos < 16 {
+			byteIndex := bitPos / 8
+			bitIndex := bitPos % 8
+			bitmap[byteIndex] |= (1 << bitIndex)
+		}
+	}
+
+	return bitmap
+}
+
+// channelTypeToBitPosition maps ChannelType to bitmap bit position.
+// Follows negotiate.ChannelBit constants.
+func channelTypeToBitPosition(chType ChannelType) int {
+	switch chType {
+	case TypeWS:
+		return 0
+	case TypeTCP:
+		return 1
+	case TypeQUIC:
+		return 2
+	case TypeUDP:
+		return 3
+	case TypeICMP:
+		return 4
+	case TypeDNS:
+		return 5
+	case TypeHTTP:
+		return 6
+	default:
+		return -1 // Unknown type
+	}
+}
+
 func (p *ChannelPool) totalSends() int64 {
 	var total int64
 	for _, info := range p.channels {
@@ -508,6 +562,50 @@ func (p *ChannelPool) SetNegotiatedChannels(channels map[ChannelType]bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.negotiatedChannels = channels
+}
+
+// SetNegotiatedChannelBitmap sets available channels from bitmap.
+// Converts bitmap bits to ChannelType map.
+func (p *ChannelPool) SetNegotiatedChannelBitmap(bitmap []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.negotiatedChannels = make(map[ChannelType]bool)
+
+	// Check each bit position
+	for bitPos := 0; bitPos < len(bitmap)*8; bitPos++ {
+		byteIndex := bitPos / 8
+		bitIndex := bitPos % 8
+		if byteIndex < len(bitmap) && (bitmap[byteIndex]&(1<<bitIndex)) != 0 {
+			// Bit is set, convert to ChannelType
+			chType := bitPositionToChannelType(bitPos)
+			if chType != "" {
+				p.negotiatedChannels[chType] = true
+			}
+		}
+	}
+}
+
+// bitPositionToChannelType converts bit position to ChannelType.
+func bitPositionToChannelType(bitPos int) ChannelType {
+	switch bitPos {
+	case 0:
+		return TypeWS
+	case 1:
+		return TypeTCP
+	case 2:
+		return TypeQUIC
+	case 3:
+		return TypeUDP
+	case 4:
+		return TypeICMP
+	case 5:
+		return TypeDNS
+	case 6:
+		return TypeHTTP
+	default:
+		return ""
+	}
 }
 
 // SetNegotiatedCodecs sets available codecs from negotiation result.

@@ -13,6 +13,7 @@ import (
 	"github.com/Script-OS/VoidBus/fragment"
 	"github.com/Script-OS/VoidBus/internal"
 	"github.com/Script-OS/VoidBus/keyprovider/embedded"
+	"github.com/Script-OS/VoidBus/negotiate"
 	"github.com/Script-OS/VoidBus/protocol"
 	"github.com/Script-OS/VoidBus/session"
 )
@@ -322,6 +323,68 @@ func (b *Bus) Negotiate(remoteCodes []string, remoteMaxDepth int, salt []byte) (
 		MaxDepth:       maxDepth,
 		NegotiatedAt:   time.Now(),
 	}, nil
+}
+
+// CreateNegotiateRequest creates a negotiation request with auto-generated bitmaps.
+// Bitmaps are automatically generated from registered codecs and channels.
+// The request should be sent through the default channel (WebSocket by default).
+//
+// Usage:
+//
+//	request, err := bus.CreateNegotiateRequest()
+//	encoded, err := request.Encode()
+//	// Send encoded bytes through default channel (WebSocket)
+func (b *Bus) CreateNegotiateRequest() (*negotiate.NegotiateRequest, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	// Auto-generate bitmaps from registered codecs and channels
+	codecBitmap := b.codecManager.GenerateCodecBitmap()
+	channelBitmap := b.channelPool.GenerateChannelBitmap()
+
+	// Validate bitmaps are not empty
+	if isBitmapEmpty(codecBitmap) {
+		return nil, errors.New("no codecs registered")
+	}
+	if isBitmapEmpty(channelBitmap) {
+		return nil, errors.New("no channels registered")
+	}
+
+	// Create negotiate request using negotiate package
+	return negotiate.NewNegotiateRequest(channelBitmap, codecBitmap)
+}
+
+// ApplyNegotiateResponse applies server's negotiation response.
+// This sets the negotiated bitmaps and marks the bus as negotiated.
+//
+// Usage:
+//
+//	response, err := negotiate.DecodeNegotiateResponse(serverData)
+//	err = bus.ApplyNegotiateResponse(response)
+func (b *Bus) ApplyNegotiateResponse(response *negotiate.NegotiateResponse) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Apply negotiated bitmaps
+	if err := b.codecManager.SetNegotiatedBitmap(response.CodecBitmap); err != nil {
+		return WrapModuleError("ApplyNegotiateResponse", "codec", err)
+	}
+
+	// Set negotiated channel types
+	b.channelPool.SetNegotiatedChannelBitmap(response.ChannelBitmap)
+
+	b.negotiated.Store(true)
+	return nil
+}
+
+// isBitmapEmpty checks if a bitmap has no bits set.
+func isBitmapEmpty(bitmap []byte) bool {
+	for _, b := range bitmap {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // SetNegotiatedBitmap sets the negotiated codec bitmap.

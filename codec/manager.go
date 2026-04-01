@@ -392,6 +392,29 @@ func (m *CodecManager) CodecCount() int {
 	return len(m.codecs)
 }
 
+// GenerateCodecBitmap generates a bitmap from registered codecs.
+// This is called automatically during negotiation to indicate supported codecs.
+// Bitmap format follows negotiate.CodecBit constants:
+// Bit 0=Plain, 1=Base64, 2=AES256, 3=XOR, 4=ChaCha20, 5=RSA, 6=GZIP, 7=ZSTD
+func (m *CodecManager) GenerateCodecBitmap() []byte {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Create 2-byte bitmap (16 bits for future extension)
+	bitmap := make([]byte, 2)
+
+	for code := range m.codecs {
+		bitPos := codeToBitPosition(code)
+		if bitPos >= 0 && bitPos < 16 {
+			byteIndex := bitPos / 8
+			bitIndex := bitPos % 8
+			bitmap[byteIndex] |= (1 << bitIndex)
+		}
+	}
+
+	return bitmap
+}
+
 // PreComputeHashes pre-computes hashes for O(1) lookup.
 func (m *CodecManager) PreComputeHashes() error {
 	m.mu.Lock()

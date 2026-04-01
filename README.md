@@ -1,15 +1,18 @@
 # VoidBus
 
-VoidBus 是一个高度模块化、可组合的通信总线库，实现信道与编解码的完全分离，支持任意组合和更换。
+VoidBus 是一个高度模块化、可组合的隐蔽通信总线库，实现信道与编解码的完全分离，支持任意组合和更换。
 
 ## 核心特性
 
 - **三层分离架构**：Codec（编解码）+ Channel（信道）+ Fragment（分片）- 用户自行序列化
-- **Codec链式组合**：支持多个Codec按顺序组合，如 AES → Base64
+- **Codec链式组合**：支持多个Codec按顺序组合，用户自定义代号标识
 - **可插拔架构**：所有模块通过接口定义，支持自定义实现
 - **双向全双工通信**：Server侧可同时向多个客户端接收和发送信息
 - **分片多信道传输**：支持数据分片，通过不同信道/编码组合发送
-- **安全协商机制**：防止降级攻击，Release模式禁用plaintext
+- **隐蔽信道设计**：支持WebSocket（默认）、TCP、QUIC、UDP等多种信道
+- **Bitmap协商协议**：二进制格式协商可用信道和Codec（非明文）
+- **信道健康度评估**：基于健康度加权随机选择信道，故障自动切换
+- **可靠/不可靠信道区分**：可靠信道信任协议，不可靠信道实现ACK/NAK重传
 - **协议安全验证**：Header完整安全验证，防止资源耗尽和重放攻击
 - **统一错误处理**：增强错误类型，支持严重程度和上下文信息
 
@@ -22,26 +25,38 @@ VoidBus/
 ├── config.go           # BusConfig配置
 ├── errors.go           # 统一错误定义（含EnhancedVoidBusError）
 │
+├── negotiate/          # 协商模块 [隐蔽信道核心]
+│   ├── interface.go    # Negotiator接口定义
+│   ├── frame.go        # NegotiateRequest/Response帧编解码
+│   ├── codec_bitmap.go # Codec Bitmap定义
+│   ├── channel_bitmap.go # Channel Bitmap定义
+│   ├── client_negotiator.go # Client协商器
+│   ├── server_negotiator.go # Server协商器 + SessionManager
+│   └── negotiate_test.go # 协商模块测试
+│
 ├── protocol/           # 协议层
 │   ├── header.go       # Header结构 + 安全验证
 │   └── header_test.go  # Header安全验证测试
 │
 ├── codec/              # 编解码模块 [不可暴露]
-│   ├── interface.go    # Codec接口定义
-│   ├── manager.go      # CodecManager
+│   ├── interface.go    # Codec接口定义 + Code()方法
+│   ├── manager.go      # CodecManager（用户自定义代号）
 │   ├── chain.go        # CodecChain实现
 │   ├── chain_test.go   # CodecChain测试
 │   ├── plain/          # Pass-through（仅调试）
 │   ├── base64/         # Base64编码
 │   ├── aes/            # AES-GCM加密
 │   ├── xor/            # XOR编码
-│   ├── chacha20/       # ChaCha20加密
-│   └── rsa/            # RSA加密
+│   ├── chacha20/       # ChaCha20-Poly1305加密
+│   └── rsa/            # RSA-OAEP加密
 │
 ├── channel/            # 信道模块 [不可暴露]
-│   ├── interface.go    # Channel接口定义
-│   ├── pool.go         # ChannelPool
-│   └── tcp/            # TCP传输实现
+│   ├── interface.go    # Channel接口定义 + IsReliable()
+│   ├── pool.go         # ChannelPool（健康度加权随机选择）
+│   ├── tcp/            # TCP传输（可靠）
+│   ├── ws/             # WebSocket传输（可靠，默认协商信道）
+│   ├── udp/            # UDP传输（不可靠，ACK/NAK重传）
+│   └── quic/           # QUIC传输（可靠，待实现）
 │
 ├── fragment/           # 分片模块
 │   ├── manager.go      # FragmentManager
@@ -56,8 +71,8 @@ VoidBus/
 │
 ├── internal/           # 内部工具（不对外暴露）
 │   ├── hash.go         # Hash计算 + HashCache
-│   ├── id.go           # ID生成
-│   ├── checksum.go     # CRC32校验
+│   ├── id.go           # ID生成 + RandomIntRange
+│   ├── checksum.go     # CRC16/CRC32校验
 │   └── *_test.go       # 内部工具测试
 │
 ├── tests/              # 测试归档目录
@@ -86,24 +101,79 @@ VoidBus/
 
 ## 数据流
 
+### 协商流程
+```
+Client通过默认信道（WebSocket）发送NegotiateRequest
+  → Server计算交集（Channel Bitmap & Codec Bitmap）
+  → Server返回NegotiateResponse（可用信道 + Codec + SessionID）
+  → 双方基于Bitmap动态组合Codec链
+```
+
 ### 发送流程
 ```
 原始数据（用户自行序列化）
+  → CodecManager.SelectChain() → 随机选择Codec组合（用户自定义代号）
   → CodecChain.Encode() → 编码/加密数据
   → FragmentManager.AdaptiveSplit() → 分片数据（自适应MTU）
-  → ChannelPool.RandomChannel() → 随机信道选择
+  → ChannelPool.SelectChannel() → 健康度加权随机选择
   → Channel.Send() → 网络传输
+    ├─ 可靠信道（TCP/QUIC/WS）: 信任协议可靠性
+    └─ 不可靠信道（UDP）: ACK/NAK重传机制
 ```
 
 ### 接收流程
 ```
 Channel.Receive() → 原始网络数据
   → DecodeHeader() → 安全验证 + 解析Header
+  → CodecManager.MatchChain(Hash) → 匹配Codec组合
   → FragmentManager.AddFragment() → 分片缓存
   → FragmentManager.Reassemble() → 完整数据
   → CodecChain.Decode() → 解码数据
   → 用户自行反序列化 → 原始数据
 ```
+
+### 故障切换
+```
+Channel.Send()超时3s无ACK
+  → ChannelPool.MarkUnavailable(chType)
+  → FragmentManager.GetPendingFragments()
+  → ChannelPool.SelectChannel(exclude=[不可用])
+  → 新信道重新发送
+```
+
+## 协商协议
+
+VoidBus v2.1 使用二进制Bitmap格式协商（非明文）：
+
+### NegotiateRequest帧格式
+```
+[1 byte: Magic 0x56] [1 byte: Version]
+[1 byte: ChCount] [N bytes: ChannelBitmap]
+[1 byte: CodecCount] [N bytes: CodecBitmap]
+[8 bytes: Nonce] [4 bytes: Timestamp]
+[1 byte: PaddingLen] [M bytes: Padding]
+[2 bytes: CRC16]
+```
+
+### NegotiateResponse帧格式
+```
+[1 byte: Magic 0x42] [1 byte: Version]
+[1 byte: ChCount] [N bytes: ChannelBitmap]
+[1 byte: CodecCount] [N bytes: CodecBitmap]
+[8 bytes: SessionID] [1 byte: Status]
+[1 byte: PaddingLen] [M bytes: Padding]
+[2 bytes: CRC16]
+```
+
+### Channel可靠性
+| Channel | IsReliable | 说明 |
+|---------|------------|------|
+| WebSocket | ✅ | 默认协商信道，易穿透防火墙 |
+| TCP | ✅ | 可靠传输 |
+| QUIC | ✅ | 可靠传输，0-RTT连接 |
+| UDP | ❌ | 需ACK/NAK重传（3s超时） |
+| ICMP | ❌ | 需可靠重传 |
+| DNS | ❌ | 需可靠重传 |
 
 ## 安全验证
 
@@ -156,38 +226,77 @@ import (
     "github.com/Script-OS/VoidBus"
     "github.com/Script-OS/VoidBus/codec/aes"
     "github.com/Script-OS/VoidBus/codec/base64"
-    "github.com/Script-OS/VoidBus/codec/plain"
+    "github.com/Script-OS/VoidBus/channel/ws"
+    "github.com/Script-OS/VoidBus/channel/tcp"
+    "github.com/Script-OS/VoidBus/negotiate"
 )
 
 func main() {
-    // 创建Bus（返回error）
+    // 1. 创建Bus
     bus, err := VoidBus.New()
     if err != nil {
         panic(err)
     }
     defer bus.Stop()
 
-    // 设置密钥（返回error）
+    // 2. 设置密钥
     key := []byte("32-byte-secret-key-for-aes-256!!")
-    err = bus.SetKey(key)
-    if err != nil {
+    if err := bus.SetKey(key); err != nil {
         panic(err)
     }
 
-    // 添加Codec（用户自定义代号）
-    bus.AddCodec(aes.NewAES256Codec(), "A")  // AES-256-GCM
-    bus.AddCodec(base64.New(), "B")          // Base64
+    // 3. 注册Codec（用户自定义代号，需收发双端一致）
+    aesCodec := aes.NewAES256Codec()
+    aesCodec.SetCode("aes")  // 自定义代号
+    bus.RegisterCodec(aesCodec)
 
-    // 设置最大链深度
-    bus.SetMaxCodecDepth(2)
+    base64Codec := base64.New()
+    base64Codec.SetCode("b64")  // 自定义代号
+    bus.RegisterCodec(base64Codec)
 
-    // 添加信道
-    bus.AddChannel(tcp.NewClientChannel("server:8080"))
+    // 4. 注册Channel
+    bus.RegisterChannel(ws.NewModule())   // WebSocket（默认协商信道）
+    bus.RegisterChannel(tcp.NewModule())  // TCP
 
-    // 发送数据（用户自行序列化）
+    // 5. 创建协商请求（Bitmap自动生成）
+    request, err := bus.CreateNegotiateRequest()
+    if err != nil {
+        panic(err)
+    }
+    
+    // 6. 编码并发送协商请求（通过WebSocket）
+    encoded, err := request.Encode()
+    if err != nil {
+        panic(err)
+    }
+    // ... 通过WebSocket发送encoded到Server ...
+    
+    // 7. 接收并应用Server响应
+    // response, _ := negotiate.DecodeNegotiateResponse(serverData)
+    // bus.ApplyNegotiateResponse(response)
+
+    // 8. 发送数据（用户自行序列化）
     data := []byte("Hello, VoidBus!")  // 或 JSON/Protobuf 序列化
     bus.Send(data)
 }
+```
+
+### 自动Bitmap生成
+
+协商时，Bitmap**自动**从注册的Codec和Channel生成，用户无需手动设置：
+
+```go
+// 注册Codec后，CodecBitmap自动包含对应的bit
+bus.RegisterCodec(aesCodec)     // 自动设置CodecBitAES256
+bus.RegisterCodec(base64Codec)  // 自动设置CodecBitBase64
+
+// 注册Channel后，ChannelBitmap自动包含对应的bit  
+bus.RegisterChannel(ws.NewModule())   // 自动设置ChannelBitWS
+bus.RegisterChannel(tcp.NewModule())  // 自动设置ChannelBitTCP
+
+// 创建协商请求时，Bitmap自动生成
+request, _ := bus.CreateNegotiateRequest()
+// request.ChannelBitmap 和 request.CodecBitmap 已自动填充
 ```
 
 ## 安全等级
@@ -207,19 +316,24 @@ func main() {
 |------|--------|------|
 | bus.go | 32.5% | 核心入口测试 |
 | protocol/header.go | 89.3% | 安全验证测试 |
+| negotiate | 79.5% | 协商协议测试（64个测试用例） |
 | errors.go | 高 | 错误处理测试 |
 | codec/aes | 81.7% | AES编解码测试 |
 | codec/base64 | 95.2% | Base64编解码测试 |
 | codec/plain | 94.7% | Plain编解码测试 |
+| channel/ws | 高 | WebSocket信道测试 |
+| channel/udp | 高 | UDP可靠重传测试 |
 
 ## 模块文档
 
+- [negotiate/](negotiate/README.md) - 协商模块（Bitmap协议）
 - [codec/](codec/README.md) - 编解码模块
 - [channel/](channel/README.md) - 信道模块
 - [fragment/](fragment/README.md) - 分片模块
 - [session/](session/README.md) - Session模块
 - [protocol/](protocol/README.md) - 协议层
 - [keyprovider/](keyprovider/embedded/README.md) - 密钥提供者
+- [tests/](tests/README.md) - 测试说明
 
 ## 详细文档
 
