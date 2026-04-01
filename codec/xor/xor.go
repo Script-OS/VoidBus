@@ -50,12 +50,14 @@ var (
 type Codec struct {
 	keyProvider keyprovider.KeyProvider
 	keySize     int
+	code        string // User-defined code for chain hash, default "xor"
 }
 
 // New creates a new XOR codec instance with default key size.
 func New() *Codec {
 	return &Codec{
 		keySize: DefaultKeySize,
+		code:    "xor",
 	}
 }
 
@@ -66,7 +68,14 @@ func NewWithKeySize(keySize int) (*Codec, error) {
 	}
 	return &Codec{
 		keySize: keySize,
+		code:    "xor",
 	}, nil
+}
+
+// SetCode sets a custom code for chain hash computation.
+// This allows users to define their own code identifiers.
+func (c *Codec) SetCode(code string) {
+	c.code = code
 }
 
 // Encode implements codec.Codec.Encode.
@@ -158,6 +167,15 @@ func (c *Codec) InternalID() string {
 // Returns SecurityLevelMedium (2) - simple encryption.
 func (c *Codec) SecurityLevel() codec.SecurityLevel {
 	return codec.SecurityLevelMedium
+}
+
+// Code implements codec.Codec.Code.
+// Returns the user-defined code (default "xor").
+func (c *Codec) Code() string {
+	if c.code == "" {
+		return "xor"
+	}
+	return c.code
 }
 
 // SetKeyProvider implements codec.KeyAwareCodec.SetKeyProvider.

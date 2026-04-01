@@ -24,11 +24,21 @@ const (
 )
 
 // Codec implements the codec.Codec interface with pass-through behavior.
-type Codec struct{}
+type Codec struct {
+	code string // User-defined code for chain hash, default "plain"
+}
 
 // New creates a new plain codec instance.
 func New() *Codec {
-	return &Codec{}
+	return &Codec{
+		code: "plain",
+	}
+}
+
+// SetCode sets a custom code for chain hash computation.
+// This allows users to define their own code identifiers.
+func (c *Codec) SetCode(code string) {
+	c.code = code
 }
 
 // Encode implements codec.Codec.Encode.
@@ -79,6 +89,15 @@ func (c *Codec) InternalID() string {
 // Returns SecurityLevelNone (0) - no encoding/encryption.
 func (c *Codec) SecurityLevel() codec.SecurityLevel {
 	return SecurityLevelValue
+}
+
+// Code implements codec.Codec.Code.
+// Returns the user-defined code (default "plain").
+func (c *Codec) Code() string {
+	if c.code == "" {
+		return "plain"
+	}
+	return c.code
 }
 
 // Module implements codec.CodecModule for registration.

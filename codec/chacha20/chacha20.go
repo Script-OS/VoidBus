@@ -59,12 +59,27 @@ var (
 
 // Codec implements the codec.Codec and codec.KeyAwareCodec interfaces for ChaCha20-Poly1305 encryption.
 type Codec struct {
+	code        string // User-defined code identifier
 	keyProvider keyprovider.KeyProvider
 }
 
 // New creates a new ChaCha20-Poly1305 codec instance.
 func New() *Codec {
-	return &Codec{}
+	return &Codec{code: "chacha20"}
+}
+
+// Code implements codec.Codec.Code.
+// Returns the user-defined code identifier for this codec.
+func (c *Codec) Code() string {
+	if c.code == "" {
+		return "chacha20" // Default value
+	}
+	return c.code
+}
+
+// SetCode sets a custom code identifier for this codec.
+func (c *Codec) SetCode(code string) {
+	c.code = code
 }
 
 // Encode implements codec.Codec.Encode.

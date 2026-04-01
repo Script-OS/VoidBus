@@ -25,11 +25,21 @@ const (
 )
 
 // Codec implements the codec.Codec interface with Base64 encoding.
-type Codec struct{}
+type Codec struct {
+	code string // User-defined code for chain hash, default "base64"
+}
 
 // New creates a new base64 codec instance.
 func New() *Codec {
-	return &Codec{}
+	return &Codec{
+		code: "base64",
+	}
+}
+
+// SetCode sets a custom code for chain hash computation.
+// This allows users to define their own code identifiers.
+func (c *Codec) SetCode(code string) {
+	c.code = code
 }
 
 // Encode implements codec.Codec.Encode.
@@ -86,6 +96,15 @@ func (c *Codec) InternalID() string {
 // Returns SecurityLevelLow (1) - encoding only, no encryption.
 func (c *Codec) SecurityLevel() codec.SecurityLevel {
 	return SecurityLevelValue
+}
+
+// Code implements codec.Codec.Code.
+// Returns the user-defined code (default "base64").
+func (c *Codec) Code() string {
+	if c.code == "" {
+		return "base64"
+	}
+	return c.code
 }
 
 // Module implements codec.CodecModule for registration.

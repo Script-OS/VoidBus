@@ -66,6 +66,7 @@ var (
 
 // Codec implements the codec.Codec and codec.KeyAwareCodec interfaces for RSA-OAEP encryption.
 type Codec struct {
+	code        string // User-defined code identifier
 	keyProvider keyprovider.KeyProvider
 	publicKey   *rsa.PublicKey
 	privateKey  *rsa.PrivateKey
@@ -73,15 +74,30 @@ type Codec struct {
 
 // New creates a new RSA-OAEP codec instance.
 func New() *Codec {
-	return &Codec{}
+	return &Codec{code: "rsa"}
 }
 
 // NewWithKeys creates a new RSA codec with explicit keys.
 func NewWithKeys(publicKey *rsa.PublicKey, privateKey *rsa.PrivateKey) *Codec {
 	return &Codec{
+		code:       "rsa",
 		publicKey:  publicKey,
 		privateKey: privateKey,
 	}
+}
+
+// Code implements codec.Codec.Code.
+// Returns the user-defined code identifier for this codec.
+func (c *Codec) Code() string {
+	if c.code == "" {
+		return "rsa" // Default value
+	}
+	return c.code
+}
+
+// SetCode sets a custom code identifier for this codec.
+func (c *Codec) SetCode(code string) {
+	c.code = code
 }
 
 // Encode implements codec.Codec.Encode.

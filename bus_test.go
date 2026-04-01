@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Script-OS/VoidBus/codec"
 	"github.com/Script-OS/VoidBus/codec/plain"
 )
 
@@ -159,19 +160,19 @@ func TestAddCodec(t *testing.T) {
 
 	// Add plain codec (no key required)
 	plainCodec := plain.New()
-	err = bus.AddCodec(plainCodec, "P")
+	err = bus.RegisterCodec(plainCodec)
 	if err != nil {
-		t.Fatalf("expected AddCodec() to succeed, got error: %v", err)
+		t.Fatalf("expected RegisterCodec() to succeed, got error: %v", err)
 	}
 
 	// Verify codec was added
-	supportedCodes := bus.codecManager.GetSupportedCodes()
-	if len(supportedCodes) != 1 {
-		t.Errorf("expected 1 codec, got %d", len(supportedCodes))
+	availableCodes := bus.codecManager.GetAvailableCodes()
+	if len(availableCodes) != 1 {
+		t.Errorf("expected 1 codec, got %d", len(availableCodes))
 	}
 
-	if supportedCodes[0] != "P" {
-		t.Errorf("expected code 'P', got '%s'", supportedCodes[0])
+	if availableCodes[0] != "plain" {
+		t.Errorf("expected code 'plain', got '%s'", availableCodes[0])
 	}
 }
 
@@ -182,14 +183,15 @@ func TestAddCodec_DuplicateCode(t *testing.T) {
 	}
 
 	plainCodec1 := plain.New()
-	err = bus.AddCodec(plainCodec1, "P")
+	err = bus.RegisterCodec(plainCodec1)
 	if err != nil {
-		t.Fatalf("first AddCodec() failed: %v", err)
+		t.Fatalf("first RegisterCodec() failed: %v", err)
 	}
 
-	// Add duplicate code
+	// Add duplicate code (same codec instance is ok, different instance with same code is error)
 	plainCodec2 := plain.New()
-	err = bus.AddCodec(plainCodec2, "P")
+	plainCodec2.SetCode("plain") // Same code as plainCodec1
+	err = bus.RegisterCodec(plainCodec2)
 	if err == nil {
 		t.Fatal("expected error for duplicate codec code")
 	}
@@ -250,7 +252,7 @@ func TestValidate_NoChannel(t *testing.T) {
 
 	// Add codec but no channel
 	plainCodec := plain.New()
-	bus.AddCodec(plainCodec, "P")
+	bus.RegisterCodec(plainCodec)
 
 	err = bus.Validate()
 	if err == nil {
@@ -270,7 +272,7 @@ func TestValidate_Valid(t *testing.T) {
 
 	// Add codec
 	plainCodec := plain.New()
-	bus.AddCodec(plainCodec, "P")
+	bus.RegisterCodec(plainCodec)
 
 	// Add mock channel (we need a real channel implementation)
 	// For now, skip this test as it requires actual channel
@@ -393,7 +395,7 @@ func TestBus_GetNegotiationInfo(t *testing.T) {
 
 	// Add codec
 	plainCodec := plain.New()
-	bus.AddCodec(plainCodec, "P")
+	bus.RegisterCodec(plainCodec)
 
 	codes, depth := bus.GetNegotiationInfo()
 
@@ -401,8 +403,9 @@ func TestBus_GetNegotiationInfo(t *testing.T) {
 		t.Errorf("expected 1 code, got %d", len(codes))
 	}
 
-	if depth != 2 {
-		t.Errorf("expected depth=2, got %d", depth)
+	// Depth should be MaxCodecDepth (default 5)
+	if depth != codec.MaxCodecDepth {
+		t.Errorf("expected depth=%d, got %d", codec.MaxCodecDepth, depth)
 	}
 }
 
@@ -701,7 +704,7 @@ func BenchmarkAddCodec(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		bus.AddCodec(plainCodec, "P")
+		bus.RegisterCodec(plainCodec)
 	}
 }
 

@@ -25,10 +25,15 @@ func main() {
 	}
 
 	// Add codecs with user-defined codes
-	// "A" = AES-256-GCM encryption
-	// "B" = Base64 encoding
-	bus.AddCodec(aes.NewAES256Codec(), "A")
-	bus.AddCodec(base64.New(), "B")
+	// Code is obtained from codec.Code(), default values:
+	// - aes.Code() = "aes"
+	// - base64.Code() = "base64"
+	// Users can customize via SetCode():
+	//   aesCodec := aes.NewAES256Codec()
+	//   aesCodec.SetCode("my-aes")  // Custom code
+	//   bus.RegisterCodec(aesCodec)
+	bus.RegisterCodec(aes.NewAES256Codec())
+	bus.RegisterCodec(base64.New())
 
 	// Set maximum codec chain depth
 	bus.SetMaxCodecDepth(2)
@@ -55,7 +60,7 @@ func main() {
 
 	// Simulate negotiation with remote (in real use, exchange via protocol)
 	// For now, assume remote has same codes
-	remoteCodes := []string{"A", "B"}
+	remoteCodes := []string{"aes", "base64"}
 	remoteDepth := 2
 	salt := []byte("negotiation-salt-32-bytes-long-key")
 

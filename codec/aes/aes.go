@@ -75,6 +75,7 @@ type AESCodec struct {
 	security    codec.SecurityLevel
 	internalID  string
 	algorithm   string
+	code        string // User-defined code for chain hash, default "aes"
 }
 
 // NewAES128Codec creates a new AES-128-GCM codec instance.
@@ -88,6 +89,7 @@ func NewAES128Codec() *AESCodec {
 		internalID:  InternalID128,
 		algorithm:   Algorithm128,
 		keyProvider: nil,
+		code:        "aes",
 	}
 }
 
@@ -102,7 +104,14 @@ func NewAES256Codec() *AESCodec {
 		internalID:  InternalID256,
 		algorithm:   Algorithm256,
 		keyProvider: nil,
+		code:        "aes",
 	}
+}
+
+// SetCode sets a custom code for chain hash computation.
+// This allows users to define their own code identifiers.
+func (c *AESCodec) SetCode(code string) {
+	c.code = code
 }
 
 // SetKeyProvider sets the key provider for this codec.
@@ -264,6 +273,14 @@ func (c *AESCodec) InternalID() string {
 // SecurityLevel returns the security level.
 func (c *AESCodec) SecurityLevel() codec.SecurityLevel {
 	return c.security
+}
+
+// Code returns the codec code for chain hash computation.
+func (c *AESCodec) Code() string {
+	if c.code == "" {
+		return "aes"
+	}
+	return c.code
 }
 
 // AES128Module implements CodecModule for AES-128-GCM.

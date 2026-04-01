@@ -202,9 +202,21 @@ func (b *Bus) statsInternal() BusStats {
 
 // === Codec Configuration ===
 
-// RegisterCodec registers a codec with its ID.
-func (b *Bus) RegisterCodec(c codec.Codec, id codec.CodecID) error {
-	if err := b.codecManager.RegisterCodec(c, id); err != nil {
+// RegisterCodec registers a codec with its user-defined code.
+// The code is used for chain hash computation and MUST be consistent
+// between sender and receiver.
+//
+// Example:
+//
+//	aesCodec := aes.NewAES256Codec(...)
+//	bus.RegisterCodec(aesCodec)  // Uses codec.Code() which should return "aes" or similar
+func (b *Bus) RegisterCodec(c codec.Codec) error {
+	code := c.Code()
+	if code == "" {
+		return errors.New("codec code cannot be empty")
+	}
+
+	if err := b.codecManager.RegisterCodec(c, code); err != nil {
 		return WrapModuleError("RegisterCodec", "codec", err)
 	}
 
@@ -217,34 +229,9 @@ func (b *Bus) RegisterCodec(c codec.Codec, id codec.CodecID) error {
 }
 
 // AddCodec is deprecated, use RegisterCodec.
-func (b *Bus) AddCodec(c codec.Codec, code string) error {
-	// Map legacy code to CodecID
-	id := codeToCodecID(code)
-	return b.RegisterCodec(c, id)
-}
-
-// codeToCodecID maps legacy code string to CodecID.
-func codeToCodecID(code string) codec.CodecID {
-	switch code {
-	case "A":
-		return codec.CodecIDAES256
-	case "B":
-		return codec.CodecIDBase64
-	case "C":
-		return codec.CodecIDChaCha20
-	case "P":
-		return codec.CodecIDPlain
-	case "X":
-		return codec.CodecIDXOR
-	case "G":
-		return codec.CodecIDGZIP
-	case "Z":
-		return codec.CodecIDZSTD
-	case "R":
-		return codec.CodecIDRSA
-	default:
-		return codec.CodecID(code[0])
-	}
+// This method attempts to extract code from codec.Code() or falls back to InternalID.
+func (b *Bus) AddCodec(c codec.Codec) error {
+	return b.RegisterCodec(c)
 }
 
 // SetKey sets the key provider with embedded key.
@@ -312,17 +299,8 @@ func (b *Bus) Negotiate(remoteCodes []string, remoteMaxDepth int, salt []byte) (
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Convert remote codes to bitmap
-	bitmap := make([]byte, 1)
-	for _, code := range remoteCodes {
-		id := codeToCodecID(code)
-		if int(id) < 8 {
-			bitmap[0] |= (1 << id)
-		}
-	}
-
-	// Set negotiated bitmap
-	if err := b.codecManager.SetNegotiatedBitmap(bitmap); err != nil {
+	// Set negotiated codes directly
+	if err := b.codecManager.SetNegotiatedCodes(remoteCodes); err != nil {
 		return nil, WrapModuleError("Negotiate", "codec", err)
 	}
 
@@ -340,7 +318,7 @@ func (b *Bus) Negotiate(remoteCodes []string, remoteMaxDepth int, salt []byte) (
 	b.negotiated.Store(true)
 
 	return &NegotiationConfig{
-		SupportedCodes: codecIDsToCodes(b.codecManager.GetAvailableCodecs()),
+		SupportedCodes: b.codecManager.GetAvailableCodes(),
 		MaxDepth:       maxDepth,
 		NegotiatedAt:   time.Now(),
 	}, nil
@@ -361,17 +339,7 @@ func (b *Bus) SetNegotiatedBitmap(bitmap []byte) error {
 
 // GetNegotiationInfo returns negotiation info for sending to remote.
 func (b *Bus) GetNegotiationInfo() ([]string, int) {
-	ids := b.codecManager.GetAvailableCodecs()
-	return codecIDsToCodes(ids), b.codecManager.GetMaxDepth()
-}
-
-// codecIDsToCodes converts CodecID slice to code strings.
-func codecIDsToCodes(ids []codec.CodecID) []string {
-	codes := make([]string, len(ids))
-	for i, id := range ids {
-		codes[i] = string(rune('A' + id))
-	}
-	return codes
+	return b.codecManager.GetAvailableCodes(), b.codecManager.GetMaxDepth()
 }
 
 // === Sending (P1: Parallel Send Optimization) ===

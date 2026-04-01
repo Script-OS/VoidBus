@@ -32,6 +32,9 @@ const (
 
 	// SecurityLevelHigh indicates high security level (e.g., AES-256, RSA).
 	SecurityLevelHigh SecurityLevel = 3
+
+	// MaxCodecDepth is the maximum depth of codec chain.
+	MaxCodecDepth = 5
 )
 
 // String returns the string representation of SecurityLevel.
@@ -73,7 +76,25 @@ type Codec interface {
 	// Decode decodes/decrypts the data.
 	Decode(data []byte) ([]byte, error)
 
+	// Code returns the codec identifier for chain hash computation.
+	// This code is user-defined and MUST be consistent between sender and receiver.
+	// The code is used in the chain hash: Hash = SHA256("code1|code2|code3")
+	//
+	// Standard codes (for bitmap mapping):
+	//   - "plain" or "p" - Plain codec
+	//   - "base64" or "b" - Base64 codec
+	//   - "aes" or "a" - AES-256-GCM codec
+	//   - "xor" or "x" - XOR codec
+	//   - "chacha" or "c" - ChaCha20 codec
+	//   - "rsa" or "r" - RSA codec
+	//   - "gzip" or "g" - GZIP codec
+	//   - "zstd" or "z" - ZSTD codec
+	//
+	// Users can also use custom codes, but they won't be mapped to standard bitmap bits.
+	Code() string
+
 	// InternalID returns the internal identifier (NOT for transmission).
+	// Deprecated: Use Code() for hash computation.
 	InternalID() string
 
 	// SecurityLevel returns the security level.

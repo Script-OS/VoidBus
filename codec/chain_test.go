@@ -328,6 +328,13 @@ func (m *mockCodec) Decode(data []byte) ([]byte, error) {
 	return data, nil
 }
 
+func (m *mockCodec) Code() string {
+	if m.id == "" {
+		return "mock"
+	}
+	return m.id
+}
+
 func (m *mockCodec) InternalID() string {
 	return m.id
 }
@@ -351,6 +358,10 @@ func (t *transformCodec) Decode(data []byte) ([]byte, error) {
 	return data[len(t.prefix):], nil
 }
 
+func (t *transformCodec) Code() string {
+	return "transform_" + t.prefix
+}
+
 func (t *transformCodec) InternalID() string {
 	return "transform_" + t.prefix
 }
@@ -371,6 +382,10 @@ func (m *mockKeyAwareCodec) Encode(data []byte) ([]byte, error) {
 
 func (m *mockKeyAwareCodec) Decode(data []byte) ([]byte, error) {
 	return data, nil
+}
+
+func (m *mockKeyAwareCodec) Code() string {
+	return "keyaware"
 }
 
 func (m *mockKeyAwareCodec) InternalID() string {
