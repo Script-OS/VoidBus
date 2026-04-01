@@ -1,8 +1,8 @@
-// Package testing provides mock implementations for VoidBus testing.
+// Package mock provides mock implementations for VoidBus testing.
 //
 // This package is designed for testing purposes only.
 // Mock implementations simulate VoidBus module behaviors without actual functionality.
-package testing
+package mock
 
 import (
 	"errors"

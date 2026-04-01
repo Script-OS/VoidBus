@@ -23,12 +23,14 @@ VoidBus/
 ├── errors.go           # 统一错误定义（含EnhancedVoidBusError）
 │
 ├── protocol/           # 协议层
-│   └── header.go       # V2Header结构 + 安全验证
+│   ├── header.go       # Header结构 + 安全验证
+│   └── header_test.go  # Header安全验证测试
 │
 ├── codec/              # 编解码模块 [不可暴露]
 │   ├── interface.go    # Codec接口定义
 │   ├── manager.go      # CodecManager
 │   ├── chain.go        # CodecChain实现
+│   ├── chain_test.go   # CodecChain测试
 │   ├── plain/          # Pass-through（仅调试）
 │   ├── base64/         # Base64编码
 │   ├── aes/            # AES-GCM加密
@@ -55,16 +57,21 @@ VoidBus/
 ├── internal/           # 内部工具（不对外暴露）
 │   ├── hash.go         # Hash计算 + HashCache
 │   ├── id.go           # ID生成
-│   └── checksum.go     # CRC32校验
+│   ├── checksum.go     # CRC32校验
+│   └── *_test.go       # 内部工具测试
+│
+├── tests/              # 测试归档目录
+│   ├── mock/           # Mock实现（依赖注入测试）
+│   │   └ mocks.go      # MockCodecManager/MockFragmentManager等
+│   └ README.md         # 测试说明文档
 │
 ├── docs/               # 文档
 │   ├── ARCHITECTURE.md # 架构设计文档
 │   └── INTERFACE.md    # 接口详细说明
 │
-├── errors.go           # 全局错误定义
 ├── bus_test.go         # Bus核心测试
 ├── errors_test.go      # 错误处理测试
-├── benchmark_test.go   # 性能基准测试
+├── benchmark_test.go   # 性能基准测试（19 benchmarks）
 └── README.md           # 项目说明
 ```
 

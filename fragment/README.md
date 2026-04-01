@@ -1,36 +1,41 @@
 # Fragment Package - 分片模块
 
-分片模块负责大数据的分片和重组，是VoidBus四层分离架构的第四层。
+分片模块负责大数据的自适应切片和重组，是VoidBus三层分离架构的分片层。
 
-**安全边界**: 部分可暴露 - FragmentInfo中的ID/Index/Total可暴露，Checksum不可暴露。
+**安全边界**: 部分可暴露 - FragmentInfo中的Index/Total/DataChecksum可暴露。
 
 ## 文件结构
 
 ```
 fragment/
-├── fragment.go       # Fragment接口 + FragmentManager实现
+├── manager.go        # FragmentManager实现
+└── buffer.go         # SendBuffer/RecvBuffer定义
 ```
 
 ## 模块职责
 
-### Fragment接口
-
-**职责**：
-- 负责大数据的分片和重组
-- 管理分片元数据（ID/Index/Total）
-- 支持分片完整性校验
-
-**不负责**：
-- 数据传输（由Channel负责）
-- 数据序列化（由Serializer负责）
-- 数据编码/加密（由Codec负责）
-
 ### FragmentManager
 
 **职责**：
-- 管理多个分片组的状态
-- 处理分片的超时清理
-- 支持并发重组
+- 自适应切片（基于Channel MTU）
+- 分片重组和完整性验证
+- NAK处理（缺失分片检测）
+- Buffer生命周期管理
+- 过期Buffer清理
+
+### SendBuffer
+
+**职责**：
+- 保留原始数据用于重传
+- 记录已发送分片状态
+- 支持NAK重传
+
+### RecvBuffer
+
+**职责**：
+- 缓存接收的分片
+- 检测缺失分片
+- 重组完整数据
 
 ## 接口定义
 

@@ -1,6 +1,6 @@
 # Channel Package - 信道模块
 
-信道模块负责底层传输层的建立和维护，是VoidBus四层分离架构的第三层。
+信道模块负责底层传输层的建立和维护，是VoidBus三层分离架构的传输层。
 
 **安全边界**: ❌ 不可暴露 - Channel类型不通过网络传输，仅通过SessionID间接引用。
 
@@ -9,24 +9,11 @@
 ```
 channel/
 ├── interface.go      # Channel接口定义
-├── channel.go        # ChannelRegistry, ServerChannelRegistry
-├── selector/         # 信道选择策略实现
-│   └── selector.go   # Random/RoundRobin/Weighted/HealthAware Selector
+├── pool.go           # ChannelPool（信道池管理）
 └── tcp/              # TCP传输实现
-    └── tcp.go
+    ├── client.go     # TCP客户端
+    └── server.go     # TCP服务端
 ```
-
-## 新增模块
-
-### selector/selector.go
-
-**职责**：
-- RandomSelector：随机选择信道
-- RoundRobinSelector：轮询选择
-- WeightedSelector：加权随机选择
-- HealthAwareSelector：基于健康状态选择
-
-**设计**：实现 protocol.ChannelSelector 接口，使用 ChannelSelectInfo 避免循环依赖
 
 ## 模块职责
 
@@ -36,19 +23,18 @@ channel/
 - 负责底层传输层的建立和维护
 - 处理网络连接的生命周期
 - 提供数据的发送和接收接口
-- 支持心跳保活机制
+- 支持MTU配置
 
 **不负责**：
-- 数据的序列化（由Serializer负责）
 - 数据编码/加密（由Codec负责）
 - 数据分片（由Fragment负责）
-- 密钥管理（由KeyProvider负责）
 
-### ServerChannel接口
+### ChannelPool
 
 **职责**：
-- 服务端监听和接受连接
-- 为每个客户端创建独立的Channel实例
+- 管理多个Channel实例
+- 提供随机选择和健康度评估
+- 支持MTU自适应
 
 ## 接口定义
 

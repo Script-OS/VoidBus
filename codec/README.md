@@ -1,11 +1,35 @@
 # Codec Package - 编解码模块
 
-编解码模块负责数据的编码/加密和解码/解密，是VoidBus四层分离架构的第二层。
+编解码模块负责数据的编码/加密和解码/解密，是VoidBus三层分离架构的核心层。
 
-**安全边界**: ❌ 不可暴露 - Codec配置不通过网络传输，仅通过SessionID间接引用。
+**安全边界**: ❌ 不可暴露 - Codec配置不通过网络传输，仅通过CodecHash间接引用。
 
 ## 文件结构
 
+```
+codec/
+├── interface.go      # Codec接口定义 + SecurityLevel
+├── manager.go        # CodecManager（注册、选择、匹配）
+├── chain.go          # CodecChain实现
+├── chain_test.go     # CodecChain测试
+├── plain/            # Pass-through Codec（仅调试）
+│   ├── plain.go
+│   └── plain_test.go
+├── base64/           # Base64编码
+│   ├── base64.go
+│   └── base64_test.go
+├── aes/              # AES-GCM加密
+│   ├── aes.go
+│   └── aes_test.go
+├── xor/              # XOR编码
+│   ├── xor.go
+│   └── xor_test.go
+├── chacha20/         # ChaCha20-Poly1305加密
+│   ├── chacha20.go
+│   └ chacha20_test.go
+└── rsa/              # RSA加密
+    ├── rsa.go
+    └ rsa_test.go
 ```
 codec/
 ├── interface.go      # Codec接口定义

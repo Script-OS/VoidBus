@@ -1,14 +1,41 @@
 # Session Package - 会话管理模块
 
-会话模块负责管理 VoidBus v2.0 的 Session 生命周期。
+会话模块负责管理 VoidBus v2.0 的 Session 生命周期和状态。
+
+## 文件结构
+
+```
+session/
+├── manager.go        # SessionManager实现
+├── session.go        # Session结构定义
+└── README.md         # 本文档
+```
+
+## Session状态机
+
+```
+Created → Sending → WaitingACK → Completed
+    │         │          │
+    └─────→ Expired ←────┘
+```
+
+## 模块职责
+
+### SessionManager
 
 **职责**：
-- Session 创建与销毁
-- Session 状态管理
-- 与 FragmentManager 协同管理 Buffer
+- Send Session创建和管理
+- Receive Session创建和管理
+- Session生命周期管理
+- 过期Session清理
 
-**生命周期**：
-```
+### Session
+
+**职责**：
+- Session状态管理
+- Codec信息记录（Codes、Hash、Depth）
+- Fragment统计（Total、Sent）
+- 重传计数
 Send(data)
   │
   ├─→ 创建 Session（UUID）
