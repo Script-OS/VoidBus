@@ -62,6 +62,16 @@ func NewV2FragmentManager(config V2FragmentConfig) *V2FragmentManager {
 	return mgr
 }
 
+// Name returns the module name (implements Module interface).
+func (m *V2FragmentManager) Name() string {
+	return "FragmentManager"
+}
+
+// ModuleStats returns module statistics (implements Module interface).
+func (m *V2FragmentManager) ModuleStats() interface{} {
+	return m.Stats()
+}
+
 // gcLoop periodically cleans up expired buffers.
 func (m *V2FragmentManager) gcLoop() {
 	ticker := time.NewTicker(m.config.GCInterval)

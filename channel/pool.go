@@ -59,6 +59,51 @@ func NewChannelPool() *ChannelPool {
 	}
 }
 
+// Name returns the module name (implements Module interface).
+func (p *ChannelPool) Name() string {
+	return "ChannelPool"
+}
+
+// ModuleStats returns module statistics (implements Module interface).
+func (p *ChannelPool) ModuleStats() interface{} {
+	return p.Stats()
+}
+
+// Stats returns channel pool statistics.
+func (p *ChannelPool) Stats() ChannelPoolStats {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	healthyCount := 0
+	totalSends := int64(0)
+	totalErrors := int64(0)
+
+	for _, info := range p.channels {
+		if info.HealthScore > 0.5 {
+			healthyCount++
+		}
+		totalSends += info.SendCount
+		totalErrors += info.ErrorCount
+	}
+
+	return ChannelPoolStats{
+		ChannelCount: len(p.channelList),
+		HealthyCount: healthyCount,
+		AdaptiveMTU:  p.GetAdaptiveMTU(),
+		TotalSends:   totalSends,
+		TotalErrors:  totalErrors,
+	}
+}
+
+// ChannelPoolStats holds channel pool statistics.
+type ChannelPoolStats struct {
+	ChannelCount int
+	HealthyCount int
+	AdaptiveMTU  int
+	TotalSends   int64
+	TotalErrors  int64
+}
+
 // AddChannel adds a channel to the pool.
 func (p *ChannelPool) AddChannel(ch Channel, id string) error {
 	p.mu.Lock()

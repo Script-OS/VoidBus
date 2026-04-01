@@ -4,6 +4,7 @@ package voidbus
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Script-OS/VoidBus/channel"
@@ -16,11 +17,12 @@ import (
 )
 
 // V2Bus is the unified entry point for VoidBus v2.0.
+// Implements Module interface for lifecycle management.
 type V2Bus struct {
 	mu     sync.RWMutex
 	config *BusConfig
 
-	// Managers
+	// Managers (implement Module interface)
 	codecManager  *codec.CodecManager
 	channelPool   *channel.ChannelPool
 	fragmentMgr   *fragment.V2FragmentManager
@@ -30,12 +32,12 @@ type V2Bus struct {
 	// Key provider
 	keyProvider *embedded.Provider
 
-	// State
-	connected   bool
-	negotiated  bool
-	negotiation *NegotiationConfig
-	running     bool
-	stopChan    chan struct{}
+	// State (atomic for thread-safe access)
+	connected  atomic.Bool
+	negotiated atomic.Bool
+	running    atomic.Bool
+	stopChan   chan struct{}
+	wg         sync.WaitGroup // WaitGroup for goroutines
 
 	// Receive
 	recvQueue      chan []byte
@@ -44,6 +46,14 @@ type V2Bus struct {
 
 	// Channel ID counter
 	channelIDCounter int
+
+	// NAK batch queue (P1 optimization)
+	nakQueue     map[string][]uint16 // sessionID -> missing indices
+	nakQueueMu   sync.Mutex
+	nakBatchSize int // Maximum NAK batch size
+
+	// Parallel send semaphore (P1 optimization)
+	sendSemaphore chan struct{}
 }
 
 // New creates a new V2Bus instance.
@@ -72,6 +82,33 @@ func NewWithConfig(config *BusConfig) *V2Bus {
 		adaptiveTimer: adaptiveTimer,
 		recvQueue:     make(chan []byte, config.RecvBufferSize),
 		stopChan:      make(chan struct{}),
+		nakQueue:      make(map[string][]uint16),
+		nakBatchSize:  10,                     // Maximum 10 missing indices per NAK
+		sendSemaphore: make(chan struct{}, 8), // Maximum 8 parallel sends
+	}
+}
+
+// Name returns the module name (implements Module interface).
+func (b *V2Bus) Name() string {
+	return "V2Bus"
+}
+
+// ModuleStats returns bus statistics (implements Module interface).
+func (b *V2Bus) ModuleStats() interface{} {
+	return b.statsInternal()
+}
+
+// statsInternal returns internal statistics.
+func (b *V2Bus) statsInternal() V2BusStats {
+	return V2BusStats{
+		Connected:     b.connected.Load(),
+		Negotiated:    b.negotiated.Load(),
+		Running:       b.running.Load(),
+		ChannelCount:  b.channelPool.Count(),
+		CodecCount:    len(b.codecManager.GetSupportedCodes()),
+		SessionStats:  b.sessionMgr.Stats(),
+		FragmentStats: b.fragmentMgr.Stats(),
+		TimerStats:    b.adaptiveTimer.GetSRTT(),
 	}
 }
 
@@ -139,11 +176,11 @@ func (b *V2Bus) Connect(remoteAddr string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.connected {
+	if b.connected.Load() {
 		return ErrBusAlreadyRunning
 	}
 
-	b.connected = true
+	b.connected.Store(true)
 	return nil
 }
 
@@ -160,14 +197,13 @@ func (b *V2Bus) Negotiate(remoteCodes []string, remoteMaxDepth int, salt []byte)
 
 	maxDepth := b.codecManager.GetMaxDepth()
 
-	b.negotiated = true
-	b.negotiation = &NegotiationConfig{
+	b.negotiated.Store(true)
+
+	return &NegotiationConfig{
 		SupportedCodes: commonCodes,
 		MaxDepth:       maxDepth,
 		NegotiatedAt:   time.Now(),
-	}
-
-	return b.negotiation, nil
+	}, nil
 }
 
 // GetNegotiationInfo returns negotiation info for sending to remote.
@@ -175,19 +211,34 @@ func (b *V2Bus) GetNegotiationInfo() ([]string, int) {
 	return b.codecManager.GetSupportedCodes(), b.codecManager.GetMaxDepth()
 }
 
-// === Sending ===
+// === Sending (P1: Parallel Send Optimization) ===
 
-// Send sends data through the bus.
+// Send sends data through the bus with parallel fragment distribution.
 func (b *V2Bus) Send(data []byte) error {
+	return b.SendWithContext(context.Background(), data)
+}
+
+// SendWithContext sends data with context for timeout/cancellation.
+func (b *V2Bus) SendWithContext(ctx context.Context, data []byte) error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	if !b.connected {
+	if !b.connected.Load() {
 		return ErrChannelNotReady
 	}
 
-	if !b.negotiated {
+	if !b.negotiated.Load() {
 		return ErrNegotiationFailed
+	}
+
+	// Acquire semaphore for parallel send control
+	select {
+	case b.sendSemaphore <- struct{}{}:
+		defer func() { <-b.sendSemaphore }()
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-b.stopChan:
+		return ErrBusNotRunning
 	}
 
 	// 1. Randomly select codec chain
@@ -231,46 +282,71 @@ func (b *V2Bus) Send(data []byte) error {
 	sendBuf.SetEncodedData(encodedData)
 	sess.SetTotalFragments(uint16(len(fragments)))
 
-	// 9. Distribute fragments across channels
+	// 9. Parallel fragment distribution (P1 optimization)
+	errChan := make(chan error, len(fragments))
+	var sendWg sync.WaitGroup
+
 	for i, fragData := range fragments {
-		// Select channel for this fragment
-		chInfo, err := b.channelPool.SelectForMTU(len(fragData) + 64)
-		if err != nil {
-			chInfo, _ = b.channelPool.RandomSelect()
-		}
+		sendWg.Add(1)
+		go func(index int, fragment []byte, checksum uint32) {
+			defer sendWg.Done()
 
-		if chInfo == nil {
-			continue
-		}
+			// Select channel for this fragment
+			chInfo, err := b.channelPool.SelectForMTU(len(fragment) + 64)
+			if err != nil {
+				chInfo, _ = b.channelPool.RandomSelect()
+			}
 
-		// Build V2Header
-		header := &protocol.V2Header{
-			SessionID:     sess.ID,
-			FragmentIndex: uint16(i),
-			FragmentTotal: uint16(len(fragments)),
-			CodecDepth:    uint8(len(codes)),
-			CodecHash:     codecHash,
-			DataChecksum:  checksums[i],
-			DataHash:      dataHash,
-			Flags:         0,
-		}
-		if i == len(fragments)-1 {
-			header.Flags |= protocol.FlagV2IsLast
-		}
+			if chInfo == nil {
+				errChan <- ErrNoHealthyChannel
+				return
+			}
 
-		// Encode header + fragment
-		packet := header.Encode(fragData)
+			// Build V2Header
+			header := &protocol.V2Header{
+				SessionID:     sess.ID,
+				FragmentIndex: uint16(index),
+				FragmentTotal: uint16(len(fragments)),
+				CodecDepth:    uint8(len(codes)),
+				CodecHash:     codecHash,
+				DataChecksum:  checksum,
+				DataHash:      dataHash,
+				Flags:         0,
+			}
+			if index == len(fragments)-1 {
+				header.Flags |= protocol.FlagV2IsLast
+			}
 
-		// Send
-		if err := chInfo.Channel.Send(packet); err != nil {
-			b.channelPool.RecordError(chInfo.ID)
-			continue
+			// Encode header + fragment
+			packet := header.Encode(fragment)
+
+			// Send
+			if err := chInfo.Channel.Send(packet); err != nil {
+				b.channelPool.RecordError(chInfo.ID)
+				errChan <- err
+				return
+			}
+
+			// Record success
+			b.channelPool.RecordSend(chInfo.ID, time.Millisecond)
+			sendBuf.AddFragment(uint16(index), fragment, checksum, chInfo.ID)
+			sess.IncrementSent()
+		}(i, fragData, checksums[i])
+	}
+
+	// Wait for all sends to complete
+	sendWg.Wait()
+
+	// Check for errors
+	select {
+	case err := <-errChan:
+		// At least one send failed, but we continue
+		// The receiver will request NAK for missing fragments
+		if b.errorHandler != nil {
+			b.errorHandler(WrapModuleError("ParallelSend", "channel", err))
 		}
-
-		// Record success
-		b.channelPool.RecordSend(chInfo.ID, time.Millisecond)
-		sendBuf.AddFragment(uint16(i), fragData, checksums[i], chInfo.ID)
-		sess.IncrementSent()
+	default:
+		// All sends successful
 	}
 
 	// Update adaptive timer
@@ -313,21 +389,44 @@ func (b *V2Bus) OnError(handler func(error)) {
 	b.errorHandler = handler
 }
 
-// StartReceive starts the background receive loop.
+// StartReceive starts the background receive loop for all channels.
+// This is the P0 fix - now actually starts receive goroutines.
 func (b *V2Bus) StartReceive() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.running {
+	if b.running.Load() {
 		return ErrBusAlreadyRunning
 	}
 
-	b.running = true
+	if !b.connected.Load() {
+		return ErrChannelNotReady
+	}
+
+	b.running.Store(true)
+
+	// Start NAK batch timer (P1 optimization)
+	go b.nakBatchLoop()
+
+	// Start receive loop for each channel
+	channelIDs := b.channelPool.GetChannelIDs()
+	for _, chID := range channelIDs {
+		info, err := b.channelPool.GetChannel(chID)
+		if err != nil {
+			continue
+		}
+
+		b.wg.Add(1)
+		go b.receiveLoop(info)
+	}
+
 	return nil
 }
 
 // receiveLoop handles receiving from a channel.
 func (b *V2Bus) receiveLoop(info *channel.ChannelInfo) {
+	defer b.wg.Done()
+
 	for {
 		select {
 		case <-b.stopChan:
@@ -339,6 +438,8 @@ func (b *V2Bus) receiveLoop(info *channel.ChannelInfo) {
 				if b.errorHandler != nil {
 					b.errorHandler(WrapModuleError("Receive", "channel", err))
 				}
+				// Brief pause before retry
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 
@@ -364,7 +465,7 @@ func (b *V2Bus) processReceivedPacket(data []byte, info *channel.ChannelInfo) er
 
 	// Check packet type
 	if header.IsNAK() {
-		return b.handleNAK(header)
+		return b.handleNAK(header, fragmentData)
 	}
 
 	if header.IsEND_ACK() {
@@ -406,10 +507,10 @@ func (b *V2Bus) handleFragment(header *protocol.V2Header, fragmentData []byte, i
 
 	// Check if complete
 	if !buf.IsComplete() {
-		// Send NAK for missing fragments
+		// Queue NAK for missing fragments (P1 batch optimization)
 		missing := buf.GetMissing()
 		if len(missing) > 0 {
-			return b.sendNAK(header.SessionID, missing)
+			b.queueNAK(header.SessionID, missing)
 		}
 		return nil
 	}
@@ -462,8 +563,63 @@ func (b *V2Bus) handleFragment(header *protocol.V2Header, fragmentData []byte, i
 	return nil
 }
 
+// === NAK Handling (P1: Batch Optimization) ===
+
+// queueNAK queues NAK request for batch processing.
+func (b *V2Bus) queueNAK(sessionID string, missing []uint16) {
+	b.nakQueueMu.Lock()
+	defer b.nakQueueMu.Unlock()
+
+	// Append to existing queue or create new
+	existing := b.nakQueue[sessionID]
+	b.nakQueue[sessionID] = append(existing, missing...)
+
+	// Limit batch size
+	if len(b.nakQueue[sessionID]) > b.nakBatchSize {
+		b.nakQueue[sessionID] = b.nakQueue[sessionID][:b.nakBatchSize]
+	}
+}
+
+// nakBatchLoop periodically sends batched NAK requests.
+func (b *V2Bus) nakBatchLoop() {
+	ticker := time.NewTicker(500 * time.Millisecond) // Batch NAK every 500ms
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			b.sendBatchedNAKs()
+		case <-b.stopChan:
+			return
+		}
+	}
+}
+
+// sendBatchedNAKs sends all queued NAK requests.
+func (b *V2Bus) sendBatchedNAKs() {
+	b.nakQueueMu.Lock()
+	queued := b.nakQueue
+	b.nakQueue = make(map[string][]uint16)
+	b.nakQueueMu.Unlock()
+
+	for sessionID, missing := range queued {
+		if len(missing) == 0 {
+			continue
+		}
+
+		if err := b.sendNAK(sessionID, missing); err != nil {
+			if b.errorHandler != nil {
+				b.errorHandler(WrapModuleError("sendBatchedNAKs", "channel", err))
+			}
+		}
+	}
+}
+
 // handleNAK handles a NAK message.
-func (b *V2Bus) handleNAK(header *protocol.V2Header) error {
+func (b *V2Bus) handleNAK(header *protocol.V2Header, extraData []byte) error {
+	// Decode missing indices from extra data
+	missing := decodeNAKIndices(extraData)
+
 	// Get send buffer
 	buf, err := b.fragmentMgr.GetSendBuffer(header.SessionID)
 	if err != nil {
@@ -484,38 +640,62 @@ func (b *V2Bus) handleNAK(header *protocol.V2Header) error {
 	}
 
 	// Get fragments for retransmission
-	fragments := buf.GetMissingFragments([]uint16{})
+	fragments := buf.GetMissingFragments(missing)
+
+	// Parallel retransmit (P1 optimization)
+	var retransmitWg sync.WaitGroup
+	errChan := make(chan error, len(fragments))
+
 	for _, frag := range fragments {
-		// Select healthy channel for retransmit
-		chInfo, err := b.channelPool.SelectHealthy()
-		if err != nil {
-			chInfo, _ = b.channelPool.RandomSelect()
+		retransmitWg.Add(1)
+		go func(f *fragment.FragmentEntry) {
+			defer retransmitWg.Done()
+
+			// Select healthy channel for retransmit
+			chInfo, err := b.channelPool.SelectHealthy()
+			if err != nil {
+				chInfo, _ = b.channelPool.RandomSelect()
+			}
+
+			if chInfo == nil {
+				errChan <- ErrNoHealthyChannel
+				return
+			}
+
+			// Build header
+			_, totalFragments := sess.GetProgress()
+			retransmitHeader := &protocol.V2Header{
+				SessionID:     header.SessionID,
+				FragmentIndex: f.Index,
+				FragmentTotal: totalFragments,
+				CodecDepth:    uint8(len(buf.CodecCodes)),
+				CodecHash:     buf.CodecHash,
+				DataChecksum:  f.Checksum,
+				DataHash:      buf.DataHash,
+				Flags:         protocol.FlagV2Retransmit,
+			}
+
+			packet := retransmitHeader.Encode(f.Data)
+
+			if err := chInfo.Channel.Send(packet); err != nil {
+				b.channelPool.RecordError(chInfo.ID)
+				errChan <- err
+				return
+			}
+
+			b.channelPool.RecordSend(chInfo.ID, time.Millisecond)
+		}(frag)
+	}
+
+	retransmitWg.Wait()
+
+	// Check for errors (non-blocking)
+	select {
+	case err := <-errChan:
+		if b.errorHandler != nil {
+			b.errorHandler(WrapModuleError("Retransmit", "channel", err))
 		}
-
-		if chInfo == nil {
-			continue
-		}
-
-		// Build header
-		retransmitHeader := &protocol.V2Header{
-			SessionID:     header.SessionID,
-			FragmentIndex: frag.Index,
-			FragmentTotal: header.FragmentTotal,
-			CodecDepth:    uint8(len(buf.CodecCodes)),
-			CodecHash:     buf.CodecHash,
-			DataChecksum:  frag.Checksum,
-			DataHash:      buf.DataHash,
-			Flags:         protocol.FlagV2Retransmit,
-		}
-
-		packet := retransmitHeader.Encode(frag.Data)
-
-		if err := chInfo.Channel.Send(packet); err != nil {
-			b.channelPool.RecordError(chInfo.ID)
-			continue
-		}
-
-		b.channelPool.RecordSend(chInfo.ID, time.Millisecond)
+	default:
 	}
 
 	return nil
@@ -591,36 +771,40 @@ func encodeNAKIndices(indices []uint16) []byte {
 	return result
 }
 
+// decodeNAKIndices decodes missing indices from NAK packet.
+func decodeNAKIndices(data []byte) []uint16 {
+	if len(data) == 0 || len(data)%2 != 0 {
+		return nil
+	}
+
+	indices := make([]uint16, len(data)/2)
+	for i := 0; i < len(indices); i++ {
+		indices[i] = uint16(data[i*2])<<8 | uint16(data[i*2+1])
+	}
+	return indices
+}
+
 // === Lifecycle ===
 
 // Start starts the bus.
 func (b *V2Bus) Start() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.running {
-		return ErrBusAlreadyRunning
-	}
-
-	if !b.connected {
-		return ErrChannelNotReady
-	}
-
-	b.running = true
-	return nil
+	return b.StartReceive()
 }
 
-// Stop stops the bus.
+// Stop stops the bus and all goroutines.
 func (b *V2Bus) Stop() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if !b.running {
+	if !b.running.Load() {
 		return ErrBusNotRunning
 	}
 
-	b.running = false
+	b.running.Store(false)
 	close(b.stopChan)
+
+	// Wait for all goroutines to finish
+	b.wg.Wait()
 
 	// Stop managers
 	b.fragmentMgr.Stop()
@@ -636,16 +820,12 @@ func (b *V2Bus) Close() error {
 
 // IsRunning returns whether the bus is running.
 func (b *V2Bus) IsRunning() bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.running
+	return b.running.Load()
 }
 
 // IsConnected returns whether the bus is connected.
 func (b *V2Bus) IsConnected() bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.connected
+	return b.connected.Load()
 }
 
 // === Statistics ===
@@ -654,16 +834,7 @@ func (b *V2Bus) IsConnected() bool {
 func (b *V2Bus) Stats() V2BusStats {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-
-	return V2BusStats{
-		Connected:     b.connected,
-		Negotiated:    b.negotiated,
-		Running:       b.running,
-		ChannelCount:  b.channelPool.Count(),
-		CodecCount:    len(b.codecManager.GetSupportedCodes()),
-		SessionStats:  b.sessionMgr.Stats(),
-		FragmentStats: b.fragmentMgr.Stats(),
-	}
+	return b.statsInternal()
 }
 
 // V2BusStats holds bus statistics.
@@ -675,6 +846,7 @@ type V2BusStats struct {
 	CodecCount    int
 	SessionStats  session.SessionManagerStats
 	FragmentStats fragment.V2FragmentStats
+	TimerStats    time.Duration
 }
 
 // === Debug ===

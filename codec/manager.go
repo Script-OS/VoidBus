@@ -47,6 +47,39 @@ func NewCodecManager() *CodecManager {
 	}
 }
 
+// Name returns the module name (implements Module interface).
+func (m *CodecManager) Name() string {
+	return "CodecManager"
+}
+
+// ModuleStats returns module statistics (implements Module interface).
+func (m *CodecManager) ModuleStats() interface{} {
+	return m.Stats()
+}
+
+// Stats returns codec manager statistics.
+func (m *CodecManager) Stats() CodecManagerStats {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return CodecManagerStats{
+		CodecCount:      len(m.supportedCodes),
+		MaxDepth:        m.maxDepth,
+		HashCacheSize:   m.hashCache.Size(),
+		IsNegotiated:    m.negotiated,
+		NegotiatedCodes: len(m.negotiatedCodes),
+	}
+}
+
+// CodecManagerStats holds codec manager statistics.
+type CodecManagerStats struct {
+	CodecCount      int
+	MaxDepth        int
+	HashCacheSize   int
+	IsNegotiated    bool
+	NegotiatedCodes int
+}
+
 // AddCodec registers a codec with a user-defined code.
 // The code is a short identifier like "A", "B", "X" that will be used
 // in hash computation instead of exposing codec names.

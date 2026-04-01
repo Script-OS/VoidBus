@@ -56,6 +56,16 @@ func NewSessionManager(config SessionManagerConfig) *SessionManager {
 	return mgr
 }
 
+// Name returns the module name (implements Module interface).
+func (m *SessionManager) Name() string {
+	return "SessionManager"
+}
+
+// ModuleStats returns module statistics (implements Module interface).
+func (m *SessionManager) ModuleStats() interface{} {
+	return m.Stats()
+}
+
 // gcLoop periodically cleans up expired sessions.
 func (m *SessionManager) gcLoop() {
 	ticker := time.NewTicker(m.config.GCInterval)
