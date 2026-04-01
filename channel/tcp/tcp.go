@@ -623,10 +623,3 @@ func (m *Module) CreateServer(config channel.ChannelConfig) (channel.ServerChann
 func (m *Module) Type() channel.ChannelType {
 	return ChannelType
 }
-
-// init registers the TCP channel module.
-func init() {
-	if err := channel.Register(NewModule()); err != nil {
-		panic("tcp: failed to register channel: " + err.Error())
-	}
-}

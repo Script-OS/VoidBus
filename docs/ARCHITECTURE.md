@@ -526,51 +526,55 @@ VoidBus/
 ├── bus.go                    # 核心 Bus 实现（统一入口）
 ├── config.go                 # BusConfig 配置结构
 ├── errors.go                 # 全局错误定义
+├── module.go                 # Module 接口抽象
 │
 ├── codec/                    # 编解码模块
 │   ├── manager.go            # CodecManager（随机选择+Hash匹配）
 │   ├── chain.go              # CodecChain（链式编解码）
 │   ├── interface.go          # Codec 接口定义
-│   ├── registry.go           # Codec 注册表（代号→Codec）
+│   ├── codec.go              # Codec 基础实现
 │   ├── aes/                  # AES 实现
 │   ├── base64/               # Base64 实现
-│   └── xor/                  # XOR 实现
+│   ├── plain/                # Plain 实现（调试用）
+│   ├── xor/                  # XOR 实现
+│   ├── chacha20/             # ChaCha20 实现
+│   └── rsa/                  # RSA 实现
 │
 ├── channel/                  # 信道模块
-│   ├── pool.go               # ChannelPool（MTU+健康度）
+│   ├── pool.go               # ChannelPool（MTU+健康度）+ HealthEvaluator
 │   ├── interface.go          # Channel 接口（含 DefaultMTU()）
-│   ├── health.go             # HealthEvaluator 实现
 │   ├── tcp/                  # TCP Channel
 │   ├── udp/                  # UDP Channel
-│   └── dns/                  # DNS Channel（低MTU示例）
+│   ├── dns/                  # DNS Channel（低MTU示例）
+│   ├── ws/                   # WebSocket Channel
+│   └── quic/                 # QUIC Channel
 │
 ├── fragment/                 # 切片模块
 │   ├── manager.go            # FragmentManager（自适应切片+重组）
 │   ├── buffer.go             # SendBuffer/RecvBuffer 定义
-│   └── metadata.go           # FragmentMetadata 结构
+│   └── errors.go             # Fragment 错误定义
 │
 ├── session/                  # 会话模块
 │   ├── manager.go            # SessionManager（生命周期）
-│   ├── session.go            # Session 结构定义
+│   └── session.go            # Session 结构定义
 │
 ├── protocol/                 # 协议层
-│   ├── negotiation.go        # 能力协商协议
-│   ├── packet.go             # 分片 Packet 编解码
-│   ├── nak.go                # NAK 消息定义
-│   ├── end.go                # END_ACK 消息定义
-│   └── header.go             # Header 编解码
+│   └── header.go             # V2Header 编解码 + NAK/END_ACK 消息
 │
 ├── internal/                 # 内部工具
-│   ├── hash.go               # Hash 计算（SHA256）
+│   ├── hash.go               # Hash 计算（SHA256）+ HashCache
 │   ├── id.go                 # UUID 生成
 │   ├── checksum.go           # CRC32 校验
-│   ├── timer.go              # 自适应超时
-│   └── permutation.go        # 排列组合生成器
+│   ├── timer.go              # 自适应超时（RFC 6298）
+│   ├── permutation.go        # 排列组合生成器
+│   └── crypto.go             # 加密工具
+│
+├── keyprovider/              # 密钥提供者
+│   ├── keyprovider.go        # KeyProvider 接口
+│   └── embedded/             # 嵌入式密钥提供者
 │
 └── examples/                 # 使用示例
-    ├── basic.go              # 基础使用示例
-    ├── dns_channel.go        # DNS 隐蔽信道示例
-    └── multi_codec.go        # 多 Codec 组合示例
+    └── v2basic/              # V2 基础使用示例
 ```
 
 ---
