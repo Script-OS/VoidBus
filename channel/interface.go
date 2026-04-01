@@ -11,6 +11,7 @@
 package channel
 
 import (
+	"crypto/tls"
 	"errors"
 	"time"
 )
@@ -113,6 +114,7 @@ type ChannelConfig struct {
 	KeepAlive       bool
 	KeepAlivePeriod time.Duration
 	ReuseAddr       bool
+	TLSConfig       *tls.Config // TLS configuration (required for QUIC, optional for others)
 }
 
 // ChannelModule is the interface for channel module registration.
