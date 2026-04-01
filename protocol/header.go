@@ -3,6 +3,7 @@
 package protocol
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/Script-OS/VoidBus/internal"
@@ -36,7 +37,7 @@ const (
 	FlagIsLast     uint8 = 0x01 // 是否最后一个分片
 	FlagRetransmit uint8 = 0x02 // 是否重传分片
 	FlagIsNAK      uint8 = 0x04 // 是否NAK请求
-	FlagIsENDACK  uint8 = 0x08 // 是否END_ACK确认
+	FlagIsENDACK   uint8 = 0x08 // 是否END_ACK确认
 )
 
 // IsLastFragment returns true if this is the last fragment.
@@ -199,6 +200,47 @@ func NewNegotiationResponse(accepted bool, commonCodes []string, maxDepth int, s
 // HeaderSize is the fixed size of Header in binary form (excluding SessionID).
 const HeaderBaseSize = 2 + 2 + 1 + 32 + 4 + 32 + 8 + 1 // 82 bytes
 
+// === Security Validation Constants ===
+// These constants define security limits for header validation.
+
+const (
+	// MaxSessionIDLength is the maximum allowed SessionID length.
+	// Prevents memory exhaustion attacks with excessively long SessionIDs.
+	MaxSessionIDLength = 64
+
+	// MinSessionIDLength is the minimum allowed SessionID length.
+	// SessionID must be at least 1 character to be valid.
+	MinSessionIDLength = 1
+
+	// MaxFragmentTotal is the maximum allowed number of fragments.
+	// Prevents resource exhaustion with excessive fragmentation.
+	MaxFragmentTotal = 10000
+
+	// MaxCodecDepth is the maximum allowed codec chain depth.
+	// Prevents deep codec chains that could cause performance issues.
+	MaxCodecDepth = 5
+
+	// MinCodecDepth is the minimum allowed codec chain depth.
+	// At least one codec is required for proper decoding.
+	MinCodecDepth = 1
+
+	// MaxTimestampAge is the maximum age of a packet timestamp in seconds.
+	// Prevents processing of stale packets (replay attack prevention).
+	MaxTimestampAge = 3600 // 1 hour
+
+	// MinTimestampAge is the minimum age of a packet timestamp in seconds.
+	// Allows for clock skew (negative = future timestamp tolerance).
+	MinTimestampAge = -300 // -5 minutes (allows future timestamps)
+
+	// MaxPacketSize is the maximum allowed packet size.
+	// Prevents processing of oversized packets.
+	MaxPacketSize = 65535 // 64KB
+
+	// MinPacketSize is the minimum allowed packet size.
+	// Must contain at least SessionID length bytes + HeaderBaseSize.
+	MinPacketSize = 2 + HeaderBaseSize // 84 bytes (empty SessionID case, but SessionID min is 1)
+)
+
 // Encode encodes the header and data into a binary packet.
 // Format: [SessionIDLen:2][SessionID:N][HeaderBase:82][Data:M]
 func (h *Header) Encode(data []byte) []byte {
@@ -265,22 +307,66 @@ func (h *Header) Encode(data []byte) []byte {
 }
 
 // DecodeHeader decodes a binary packet into header and data.
+// Performs comprehensive security validation to prevent various attacks.
 func DecodeHeader(packet []byte) (*Header, []byte, error) {
-	if len(packet) < 2 {
-		return nil, nil, ErrV2InvalidPacket
+	// === P0: Security Validation ===
+
+	// 1. Basic packet size validation
+	if len(packet) < MinPacketSize {
+		return nil, nil, NewValidationError(
+			"PacketSize",
+			"packet too short",
+			len(packet),
+			MinPacketSize,
+		)
+	}
+
+	if len(packet) > MaxPacketSize {
+		return nil, nil, NewValidationError(
+			"PacketSize",
+			"packet too large",
+			len(packet),
+			MaxPacketSize,
+		)
 	}
 
 	offset := 0
 
-	// SessionID length
+	// 2. SessionID length validation
 	sessionIDLen := int(packet[offset])<<8 | int(packet[offset+1])
 	offset += 2
 
-	if len(packet) < offset+sessionIDLen+HeaderBaseSize {
-		return nil, nil, ErrV2InvalidPacket
+	// Check SessionID length bounds
+	if sessionIDLen < MinSessionIDLength {
+		return nil, nil, NewValidationError(
+			"SessionID",
+			"sessionID too short",
+			sessionIDLen,
+			fmt.Sprintf(">= %d", MinSessionIDLength),
+		)
 	}
 
-	// SessionID
+	if sessionIDLen > MaxSessionIDLength {
+		return nil, nil, NewValidationError(
+			"SessionID",
+			"sessionID too long",
+			sessionIDLen,
+			fmt.Sprintf("<= %d", MaxSessionIDLength),
+		)
+	}
+
+	// Check packet has enough data for SessionID and header
+	minRequiredLen := offset + sessionIDLen + HeaderBaseSize
+	if len(packet) < minRequiredLen {
+		return nil, nil, NewValidationError(
+			"PacketSize",
+			"packet truncated after sessionID",
+			len(packet),
+			minRequiredLen,
+		)
+	}
+
+	// 3. SessionID extraction
 	sessionID := string(packet[offset : offset+sessionIDLen])
 	offset += sessionIDLen
 
@@ -288,43 +374,112 @@ func DecodeHeader(packet []byte) (*Header, []byte, error) {
 		SessionID: sessionID,
 	}
 
-	// FragmentIndex
+	// 4. FragmentIndex and FragmentTotal validation
 	header.FragmentIndex = uint16(packet[offset])<<8 | uint16(packet[offset+1])
 	offset += 2
 
-	// FragmentTotal
 	header.FragmentTotal = uint16(packet[offset])<<8 | uint16(packet[offset+1])
 	offset += 2
 
-	// CodecDepth
+	// Check FragmentTotal upper bound
+	if header.FragmentTotal > MaxFragmentTotal {
+		return nil, nil, NewValidationError(
+			"FragmentTotal",
+			"fragment count exceeds limit",
+			header.FragmentTotal,
+			fmt.Sprintf("<= %d", MaxFragmentTotal),
+		)
+	}
+
+	// Check FragmentIndex < FragmentTotal (for data fragments)
+	// Note: NAK and END_ACK packets may have FragmentTotal=0, skip this check
+	if header.FragmentTotal > 0 && header.FragmentIndex >= header.FragmentTotal {
+		return nil, nil, NewValidationError(
+			"FragmentIndex",
+			"fragment index out of range",
+			header.FragmentIndex,
+			fmt.Sprintf("< %d", header.FragmentTotal),
+		)
+	}
+
+	// 5. CodecDepth validation
 	header.CodecDepth = packet[offset]
 	offset += 1
 
-	// CodecHash
+	if header.CodecDepth < MinCodecDepth {
+		return nil, nil, NewValidationError(
+			"CodecDepth",
+			"codec depth too small",
+			header.CodecDepth,
+			fmt.Sprintf(">= %d", MinCodecDepth),
+		)
+	}
+
+	if header.CodecDepth > MaxCodecDepth {
+		return nil, nil, NewValidationError(
+			"CodecDepth",
+			"codec depth exceeds limit",
+			header.CodecDepth,
+			fmt.Sprintf("<= %d", MaxCodecDepth),
+		)
+	}
+
+	// 6. CodecHash (32 bytes)
 	copy(header.CodecHash[:], packet[offset:offset+32])
 	offset += 32
 
-	// DataChecksum
+	// 7. DataChecksum (4 bytes)
 	header.DataChecksum = uint32(packet[offset])<<24 | uint32(packet[offset+1])<<16 |
 		uint32(packet[offset+2])<<8 | uint32(packet[offset+3])
 	offset += 4
 
-	// DataHash
+	// 8. DataHash (32 bytes)
 	copy(header.DataHash[:], packet[offset:offset+32])
 	offset += 32
 
-	// Timestamp
+	// 9. Timestamp validation
 	header.Timestamp = 0
 	for i := 0; i < 8; i++ {
 		header.Timestamp |= int64(packet[offset+i]) << (56 - i*8)
 	}
 	offset += 8
 
-	// Flags
+	// Validate timestamp age (prevent replay attacks)
+	now := time.Now().Unix()
+	age := now - header.Timestamp
+	if age > MaxTimestampAge {
+		return nil, nil, NewValidationError(
+			"Timestamp",
+			"packet timestamp too old (potential replay attack)",
+			age,
+			fmt.Sprintf("<= %d seconds", MaxTimestampAge),
+		)
+	}
+	if age < MinTimestampAge {
+		return nil, nil, NewValidationError(
+			"Timestamp",
+			"packet timestamp in future (clock skew issue)",
+			age,
+			fmt.Sprintf(">= %d seconds", MinTimestampAge),
+		)
+	}
+
+	// 10. Flags validation
 	header.Flags = packet[offset]
 	offset += 1
 
-	// Data
+	// Validate flags are from known set
+	validFlags := FlagIsLast | FlagRetransmit | FlagIsNAK | FlagIsENDACK
+	if header.Flags & ^validFlags != 0 {
+		return nil, nil, NewValidationError(
+			"Flags",
+			"invalid flag bits detected",
+			header.Flags,
+			fmt.Sprintf("valid flags: 0x%02x", validFlags),
+		)
+	}
+
+	// 11. Data extraction
 	data := packet[offset:]
 
 	return header, data, nil
@@ -344,4 +499,28 @@ type V2ProtocolError struct {
 
 func (e *V2ProtocolError) Error() string {
 	return e.Msg
+}
+
+// V2ValidationError represents a security validation error for v2 protocol.
+// Provides detailed information about which field failed validation and why.
+type V2ValidationError struct {
+	Field    string      // The field that failed validation
+	Actual   interface{} // The actual value received
+	Expected interface{} // The expected/allowed value
+	Msg      string      // Human-readable error message
+}
+
+func (e *V2ValidationError) Error() string {
+	return fmt.Sprintf("validation error: %s - %s (actual: %v, expected: %v)",
+		e.Field, e.Msg, e.Actual, e.Expected)
+}
+
+// NewValidationError creates a new validation error.
+func NewValidationError(field, msg string, actual, expected interface{}) *V2ValidationError {
+	return &V2ValidationError{
+		Field:    field,
+		Msg:      msg,
+		Actual:   actual,
+		Expected: expected,
+	}
 }

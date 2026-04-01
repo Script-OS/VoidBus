@@ -14,10 +14,15 @@ import (
 
 func main() {
 	// Create a new VoidBus v2.0 instance
-	bus := voidbus.New()
+	bus, err := voidbus.New()
+	if err != nil {
+		log.Fatal("Failed to create VoidBus:", err)
+	}
 
 	// Configure key for encryption
-	bus.SetKey([]byte("32-byte-secret-key-for-aes-256-gcm"))
+	if err := bus.SetKey([]byte("32-byte-secret-key-for-aes-256-gcm")); err != nil {
+		log.Fatal("Failed to set key:", err)
+	}
 
 	// Add codecs with user-defined codes
 	// "A" = AES-256-GCM encryption

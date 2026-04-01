@@ -56,14 +56,21 @@ type Bus struct {
 	sendSemaphore chan struct{}
 }
 
-// New creates a new Bus instance.
-func New() *Bus {
+// New creates a new Bus instance with default configuration.
+// Returns error if configuration validation fails.
+func New() (*Bus, error) {
 	config := DefaultBusConfig()
 	return NewWithConfig(config)
 }
 
 // NewWithConfig creates a new Bus with custom config.
-func NewWithConfig(config *BusConfig) *Bus {
+// Returns error if configuration validation fails.
+func NewWithConfig(config *BusConfig) (*Bus, error) {
+	// Validate configuration
+	if err := config.Validate(); err != nil {
+		return nil, WrapModuleError("NewWithConfig", "bus", err)
+	}
+
 	codecMgr := codec.NewCodecManager()
 	channelPool := channel.NewChannelPool()
 	fragmentMgr := fragment.NewFragmentManager(fragment.DefaultFragmentConfig())
@@ -85,7 +92,7 @@ func NewWithConfig(config *BusConfig) *Bus {
 		nakQueue:      make(map[string][]uint16),
 		nakBatchSize:  10,                     // Maximum 10 missing indices per NAK
 		sendSemaphore: make(chan struct{}, 8), // Maximum 8 parallel sends
-	}
+	}, nil
 }
 
 // Name returns the module name (implements Module interface).
@@ -129,12 +136,14 @@ func (b *Bus) AddCodec(c codec.Codec, code string) error {
 }
 
 // SetKey sets the key provider with embedded key.
-func (b *Bus) SetKey(key []byte) {
+// Returns error if key initialization fails (instead of silently failing).
+func (b *Bus) SetKey(key []byte) error {
 	provider, err := embedded.New(key, "", "AES-256-GCM")
 	if err != nil {
-		return
+		return WrapModuleError("SetKey", "keyprovider", err)
 	}
 	b.keyProvider = provider
+	return nil
 }
 
 // SetKeyProvider sets a custom key provider.
