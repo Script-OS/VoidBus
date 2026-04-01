@@ -3,6 +3,7 @@ package voidbus
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,20 @@ import (
 	"github.com/Script-OS/VoidBus/protocol"
 	"github.com/Script-OS/VoidBus/session"
 )
+
+// Dependencies holds injectable module dependencies for Bus.
+// Used for dependency injection in testing and custom configurations.
+type Dependencies struct {
+	CodecManager  *codec.CodecManager
+	ChannelPool   *channel.ChannelPool
+	FragmentMgr   *fragment.FragmentManager
+	SessionMgr    *session.SessionManager
+	AdaptiveTimer *internal.AdaptiveTimeout
+	KeyProvider   *embedded.Provider
+}
+
+// ErrDependencyMissing indicates a required dependency is missing.
+var ErrDependencyMissing = errors.New("voidbus: required dependency missing")
 
 // Bus is the unified entry point for VoidBus v2.0.
 // Implements Module interface for lifecycle management.
@@ -87,6 +102,72 @@ func NewWithConfig(config *BusConfig) (*Bus, error) {
 		fragmentMgr:   fragmentMgr,
 		sessionMgr:    sessionMgr,
 		adaptiveTimer: adaptiveTimer,
+		recvQueue:     make(chan []byte, config.RecvBufferSize),
+		stopChan:      make(chan struct{}),
+		nakQueue:      make(map[string][]uint16),
+		nakBatchSize:  10,                     // Maximum 10 missing indices per NAK
+		sendSemaphore: make(chan struct{}, 8), // Maximum 8 parallel sends
+	}, nil
+}
+
+// NewWithDependencies creates a new Bus with injected dependencies.
+// This is primarily used for testing with mock implementations.
+//
+// Required dependencies:
+//   - CodecManager (must not be nil)
+//   - ChannelPool (must not be nil)
+//   - FragmentMgr (must not be nil)
+//   - SessionMgr (must not be nil)
+//   - AdaptiveTimer (must not be nil)
+//
+// Optional dependencies:
+//   - KeyProvider (can be nil, set via SetKey later)
+//
+// Returns error if any required dependency is missing or config validation fails.
+func NewWithDependencies(config *BusConfig, deps *Dependencies) (*Bus, error) {
+	// Validate configuration
+	if err := config.Validate(); err != nil {
+		return nil, WrapModuleError("NewWithDependencies", "bus", err)
+	}
+
+	// Validate required dependencies
+	if deps == nil {
+		return nil, WrapModuleError("NewWithDependencies", "bus", ErrDependencyMissing)
+	}
+
+	if deps.CodecManager == nil {
+		return nil, WrapModuleError("NewWithDependencies", "bus",
+			CriticalError("CodecManager", "dependencies", "CodecManager is required", ErrDependencyMissing))
+	}
+
+	if deps.ChannelPool == nil {
+		return nil, WrapModuleError("NewWithDependencies", "bus",
+			CriticalError("ChannelPool", "dependencies", "ChannelPool is required", ErrDependencyMissing))
+	}
+
+	if deps.FragmentMgr == nil {
+		return nil, WrapModuleError("NewWithDependencies", "bus",
+			CriticalError("FragmentMgr", "dependencies", "FragmentMgr is required", ErrDependencyMissing))
+	}
+
+	if deps.SessionMgr == nil {
+		return nil, WrapModuleError("NewWithDependencies", "bus",
+			CriticalError("SessionMgr", "dependencies", "SessionMgr is required", ErrDependencyMissing))
+	}
+
+	if deps.AdaptiveTimer == nil {
+		return nil, WrapModuleError("NewWithDependencies", "bus",
+			CriticalError("AdaptiveTimer", "dependencies", "AdaptiveTimer is required", ErrDependencyMissing))
+	}
+
+	return &Bus{
+		config:        config,
+		codecManager:  deps.CodecManager,
+		channelPool:   deps.ChannelPool,
+		fragmentMgr:   deps.FragmentMgr,
+		sessionMgr:    deps.SessionMgr,
+		adaptiveTimer: deps.AdaptiveTimer,
+		keyProvider:   deps.KeyProvider,
 		recvQueue:     make(chan []byte, config.RecvBufferSize),
 		stopChan:      make(chan struct{}),
 		nakQueue:      make(map[string][]uint16),

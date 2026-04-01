@@ -681,8 +681,15 @@ bus := core.NewBuilder().
     Build()
 
 // 新 API (v2.0)
-bus := voidbus.New()
-bus.AddCodec(aes.New(), "A")
+bus, err := voidbus.New()
+if err != nil {
+    // 统一错误处理
+    if voidbus.IsCritical(err) {
+        panic(err)
+    }
+    // 可恢复错误处理
+}
+bus.AddCodec(aes.NewAES256Codec(), "A")
 bus.AddCodec(base64.New(), "B")
 bus.SetMaxCodecDepth(2)
 bus.AddChannel(tcp.NewClient("server:8080"))
@@ -695,3 +702,165 @@ bus.Connect("remote-address")
 - Codec 链式组合
 - Bus / ServerBus / MultiBus 三种模式
 - 安全协商机制
+
+---
+
+## 8. 安全验证设计 (v2.0)
+
+### 8.1 Protocol Header 安全验证
+
+VoidBus v2.0 在 `DecodeHeader` 中实现了完整的安全验证，防止多种攻击：
+
+**验证常量定义**：
+
+```go
+const (
+    MaxSessionIDLength = 64      // SessionID最大长度
+    MinSessionIDLength = 1       // SessionID最小长度
+    MaxFragmentTotal   = 10000   // 最大分片数
+    MaxCodecDepth      = 5       // 最大Codec深度
+    MinCodecDepth      = 1       // 最小Codec深度
+    MaxTimestampAge    = 3600    // 最大时间戳偏差（秒）
+    MinTimestampAge    = -300    // 最小时间戳偏差（允许未来5分钟）
+    MaxPacketSize      = 65535   // 最大包大小
+    MinPacketSize      = 84      // 最小包大小
+)
+```
+
+**验证流程**：
+
+| 验证项 | 防护目标 | 失败处理 |
+|--------|----------|----------|
+| PacketSize | 防止过大/过小包攻击 | 返回 V2ValidationError |
+| SessionID长度 | 防止内存耗尽攻击 | 返回 V2ValidationError |
+| FragmentTotal上限 | 防止资源耗尽 | 返回 V2ValidationError |
+| FragmentIndex范围 | 防止越界访问 | 返回 V2ValidationError |
+| CodecDepth范围 | 防止深度溢出 | 返回 V2ValidationError |
+| Timestamp防重放 | 防止重放攻击 | 返回 V2ValidationError |
+| Flags合法性 | 防止未知标志注入 | 返回 V2ValidationError |
+
+**V2ValidationError 结构**：
+
+```go
+type V2ValidationError struct {
+    Field    string      // 失败字段名
+    Actual   interface{} // 实际值
+    Expected interface{} // 期望值
+    Msg      string      // 错误消息
+}
+```
+
+### 8.2 Timestamp 验证逻辑
+
+```go
+now := time.Now().Unix()
+age := now - header.Timestamp
+
+// 防止重放攻击：拒绝超过1小时的包
+if age > MaxTimestampAge {
+    return nil, nil, NewValidationError("Timestamp", "packet too old", age, "<= 3600")
+}
+
+// 允许时钟偏差：接受未来5分钟的包
+if age < MinTimestampAge {
+    return nil, nil, NewValidationError("Timestamp", "timestamp in future", age, ">= -300")
+}
+```
+
+---
+
+## 9. 统一错误处理策略 (v2.0)
+
+### 9.1 错误严重程度
+
+VoidBus v2.0 引入了错误严重程度分级：
+
+```go
+type ErrorSeverity int
+
+const (
+    SeverityLow      ErrorSeverity = iota // 可恢复，不影响主流程
+    SeverityMedium                         // 需处理，可能影响部分功能
+    SeverityHigh                           // 严重影响，主要功能受阻
+    SeverityCritical                       // 致命错误，无法继续运行
+)
+```
+
+### 9.2 EnhancedVoidBusError
+
+增强错误类型支持严重程度和上下文信息：
+
+```go
+type EnhancedVoidBusError struct {
+    *VoidBusError
+    Severity    ErrorSeverity
+    Recoverable bool
+    Context     map[string]interface{}
+}
+
+func (e *EnhancedVoidBusError) Error() string {
+    return fmt.Sprintf("[%s/%s] %s (severity: %s, recoverable: %v)",
+        e.Module, e.Operation, e.Message, e.Severity.String(), e.Recoverable)
+}
+```
+
+### 9.3 统一错误包装函数
+
+| 函数 | 用途 | 严重程度 |
+|------|------|----------|
+| `MustWrap(op, module, err)` | 关键路径强制包装 | SeverityHigh |
+| `SoftWrap(op, module, err)` | 可选路径软包装 | SeverityLow |
+| `RecoverableError(...)` | 可恢复错误 | SeverityMedium + Recoverable=true |
+| `CriticalError(...)` | 致命错误 | SeverityCritical |
+| `WrapWithContext(...)` | 带上下文包装 | SeverityMedium |
+
+### 9.4 错误辅助函数
+
+```go
+// 检查是否为增强错误
+func IsEnhancedError(err error) bool
+
+// 获取错误严重程度
+func GetSeverity(err error) ErrorSeverity
+
+// 检查是否可恢复
+func IsRecoverable(err error) bool
+
+// 检查是否为致命错误
+func IsCritical(err error) bool
+
+// 检查是否为高严重程度
+func IsHighSeverity(err error) bool
+```
+
+### 9.5 API 签名变更
+
+**变更对比**：
+
+| 函数 | 旧签名 | 新签名 |
+|------|--------|--------|
+| `New()` | `*Bus` | `(*Bus, error)` |
+| `NewWithConfig()` | `*Bus` | `(*Bus, error)` |
+| `SetKey()` | `void` (静默失败) | `error` |
+
+**使用示例**：
+
+```go
+// 旧 API（静默失败）
+bus := voidbus.New()
+bus.SetKey(key)  // 失败时静默返回
+
+// 新 API（显式错误）
+bus, err := voidbus.New()
+if err != nil {
+    if voidbus.IsCritical(err) {
+        log.Fatal(err)
+    }
+    // 可恢复错误处理
+}
+
+err = bus.SetKey(key)
+if err != nil {
+    log.Printf("SetKey failed: %v", err)
+}
+```
