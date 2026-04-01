@@ -1,18 +1,19 @@
-// Package main provides an interactive VoidBus client example.
+// Package main provides an interactive VoidBus client example using new Dial API.
 //
 // This example demonstrates:
 // - Creating a VoidBus client
 // - Registering codecs
-// - Establishing TCP connection
-// - Negotiation handshake
+// - Using Dial to establish connection (with auto-negotiation)
+// - Standard net.Conn Read/Write interface
 // - Interactive message sending/receiving
 package main
 
 import (
 	"bufio"
-	"context"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -24,7 +25,6 @@ import (
 	"github.com/Script-OS/VoidBus/channel"
 	"github.com/Script-OS/VoidBus/channel/tcp"
 	"github.com/Script-OS/VoidBus/codec/base64"
-	"github.com/Script-OS/VoidBus/negotiate"
 )
 
 const (
@@ -34,7 +34,7 @@ const (
 func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	fmt.Println("╔════════════════════════════════════════════════════════════╗")
-	fmt.Println("║           VoidBus Interactive Client Example              ║")
+	fmt.Println("║           VoidBus Interactive Client (net.Conn API)       ║")
 	fmt.Println("╠════════════════════════════════════════════════════════════╣")
 	fmt.Println("║ Commands:                                                  ║")
 	fmt.Println("║   <message>  - Send message to server                      ║")
@@ -43,7 +43,7 @@ func main() {
 	fmt.Println()
 
 	// === Step 1: Create Bus ===
-	fmt.Println("[1/6] Creating VoidBus...")
+	fmt.Println("[1/4] Creating VoidBus...")
 	bus, err := voidbus.New()
 	if err != nil {
 		log.Fatalf("Failed to create bus: %v", err)
@@ -51,7 +51,7 @@ func main() {
 	fmt.Println("      ✓ Bus created successfully")
 
 	// === Step 2: Register Codec ===
-	fmt.Println("[2/6] Registering codecs...")
+	fmt.Println("[2/4] Registering codecs...")
 	codec := base64.New()
 	if err := bus.RegisterCodec(codec); err != nil {
 		log.Fatalf("Failed to register codec: %v", err)
@@ -59,114 +59,83 @@ func main() {
 	fmt.Printf("      ✓ Registered codec: %s (SecurityLevel: %d)\n",
 		codec.Code(), codec.SecurityLevel())
 
-	// === Step 3: Create TCP Channel ===
-	fmt.Println("[3/6] Connecting to server...")
+	// === Step 3: Create and Register Channel ===
+	fmt.Println("[3/4] Creating TCP channel...")
 	chConfig := channel.ChannelConfig{
 		Address: serverAddr,
-		Timeout: 5, // 5 seconds connect timeout
+		Timeout: 5 * time.Second,
 	}
 	clientCh, err := tcp.NewClientChannel(chConfig)
 	if err != nil {
 		log.Fatalf("Failed to create TCP channel: %v", err)
 	}
-	fmt.Printf("      ✓ TCP channel created (ID: %s)\n", clientCh.Type())
+	fmt.Printf("      ✓ TCP channel created (Type: %s)\n", clientCh.Type())
 
 	// Add channel to bus
 	if err := bus.AddChannel(clientCh); err != nil {
 		log.Fatalf("Failed to add channel: %v", err)
 	}
 
-	// Connect
-	if err := bus.Connect(serverAddr); err != nil {
-		log.Fatalf("Failed to connect: %v", err)
-	}
-	fmt.Printf("      ✓ Connected to %s\n", serverAddr)
+	// === Step 4: Dial (Auto-negotiation) ===
+	fmt.Println("[4/4] Dialing server (auto-negotiation)...")
 
-	// === Step 4: Negotiation ===
-	fmt.Println("[4/6] Performing negotiation handshake...")
-
-	// Create negotiate request (auto-generated from registered codecs)
-	request, err := bus.CreateNegotiateRequest()
+	// Dial returns net.Conn (standard Go interface)
+	conn, err := bus.Dial(clientCh)
 	if err != nil {
-		log.Fatalf("Failed to create negotiate request: %v", err)
+		log.Fatalf("Failed to dial: %v", err)
 	}
-	fmt.Printf("      → Client Codec Bitmap: %08b\n", request.CodecBitmap)
-	fmt.Printf("      → Client Channel Bitmap: %08b\n", request.ChannelBitmap)
-	fmt.Printf("      → SessionNonce: %x\n", request.SessionNonce)
+	defer conn.Close()
 
-	// Encode and send request
-	requestData, err := request.Encode()
-	if err != nil {
-		log.Fatalf("Failed to encode request: %v", err)
-	}
-	fmt.Printf("      → Sending negotiate request (%d bytes)\n", len(requestData))
-
-	if err := clientCh.Send(requestData); err != nil {
-		log.Fatalf("Failed to send negotiate request: %v", err)
-	}
-
-	// Receive response
-	responseData, err := clientCh.Receive()
-	if err != nil {
-		log.Fatalf("Failed to receive negotiate response: %v", err)
-	}
-	fmt.Printf("      ← Received negotiate response (%d bytes)\n", len(responseData))
-
-	// Decode response
-	response, err := negotiate.DecodeNegotiateResponse(responseData)
-	if err != nil {
-		log.Fatalf("Failed to decode negotiate response: %v", err)
-	}
-	fmt.Printf("      ← Server Codec Bitmap: %08b\n", response.CodecBitmap)
-	fmt.Printf("      ← Server Channel Bitmap: %08b\n", response.ChannelBitmap)
-	fmt.Printf("      ← SessionID: %x\n", response.SessionID)
-	fmt.Printf("      ← Status: %d (Success=0, Reject=1)\n", response.Status)
-
-	if response.Status != negotiate.NegotiateStatusSuccess {
-		log.Fatalf("Negotiation rejected by server")
-	}
-
-	// Apply negotiation result
-	if err := bus.ApplyNegotiateResponse(response); err != nil {
-		log.Fatalf("Failed to apply negotiate response: %v", err)
-	}
-	fmt.Println("      ✓ Negotiation completed successfully")
-
-	// === Step 5: Start Receive Loop ===
-	fmt.Println("[5/6] Starting receive loop...")
-
-	var receivedCount int
-	var mu sync.Mutex
-
-	bus.OnMessage(func(data []byte) {
-		mu.Lock()
-		receivedCount++
-		count := receivedCount
-		mu.Unlock()
-
-		fmt.Printf("\n📨 [MSG #%d] Received: %s (%d bytes)\n", count, string(data), len(data))
-		fmt.Print("> ")
-	})
-
-	bus.OnError(func(err error) {
-		fmt.Printf("\n❌ Error: %v\n", err)
-		fmt.Print("> ")
-	})
-
-	if err := bus.StartReceive(); err != nil {
-		log.Fatalf("Failed to start receive: %v", err)
-	}
-	fmt.Println("      ✓ Receive loop started")
+	fmt.Printf("      ✓ Connected and negotiated successfully\n")
+	fmt.Printf("      ✓ RemoteAddr: %s\n", conn.RemoteAddr().String())
 	fmt.Println()
 
-	// === Step 6: Interactive Input ===
-	fmt.Println("[6/6] Ready for interactive input")
+	// === Interactive Session ===
+	fmt.Println("═════════════════════════════════════════════════════════════")
+	fmt.Println("Ready for interactive input (net.Conn Read/Write)")
 	fmt.Println("═════════════════════════════════════════════════════════════")
 	fmt.Println()
 
 	// Setup signal handler for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Receive goroutine (using standard net.Conn Read)
+	var receivedCount int
+	var mu sync.Mutex
+	receiveDone := make(chan struct{})
+
+	go func() {
+		defer close(receiveDone)
+		buf := make([]byte, 64*1024) // 64KB buffer for complete message
+		for {
+			// Set read deadline
+			conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+
+			n, err := conn.Read(buf)
+			if err != nil {
+				if netErr, ok := err.(*net.OpError); ok && netErr.Timeout() {
+					// Timeout is expected for polling
+					continue
+				}
+				if err == io.EOF {
+					fmt.Println("\n🔴 Server closed connection")
+					return
+				}
+				continue
+			}
+
+			mu.Lock()
+			receivedCount++
+			count := receivedCount
+			mu.Unlock()
+
+			data := make([]byte, n)
+			copy(data, buf[:n])
+			fmt.Printf("\n📨 [MSG #%d] Received: %s (%d bytes)\n", count, string(data), n)
+			fmt.Print("> ")
+		}
+	}()
 
 	// Input reader
 	reader := bufio.NewReader(os.Stdin)
@@ -197,17 +166,17 @@ func main() {
 				return
 			}
 
-			// Send message
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// Send message using standard net.Conn Write
 			sendCount++
 			fmt.Printf("📤 [MSG #%d] Sending: %s (%d bytes)...\n", sendCount, input, len(input))
 
-			if err := bus.SendWithContext(ctx, []byte(input)); err != nil {
+			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			n, err := conn.Write([]byte(input))
+			if err != nil {
 				fmt.Printf("   ❌ Send failed: %v\n", err)
 			} else {
-				fmt.Printf("   ✓ Sent successfully\n")
+				fmt.Printf("   ✓ Sent %d bytes successfully\n", n)
 			}
-			cancel()
 		}
 	}()
 
@@ -217,15 +186,11 @@ func main() {
 	fmt.Println("═════════════════════════════════════════════════════════════")
 	fmt.Println("Shutting down...")
 
-	// Stop bus
-	if err := bus.Stop(); err != nil {
-		log.Printf("Error stopping bus: %v", err)
-	}
+	// Close connection
+	conn.Close()
 
-	// Close channel
-	if err := clientCh.Close(); err != nil {
-		log.Printf("Error closing channel: %v", err)
-	}
+	// Stop bus
+	bus.Stop()
 
 	fmt.Println("✓ Client stopped")
 	fmt.Printf("Stats: Sent %d messages, Received %d messages\n", sendCount, receivedCount)

@@ -1,18 +1,20 @@
-// Package main provides an interactive VoidBus server example.
+// Package main provides an interactive VoidBus server example using new Listen API.
 //
 // This example demonstrates:
 // - Creating a VoidBus server
-// - Accepting client connections
-// - Negotiation handshake handling
+// - Using Listen to accept connections (with auto-negotiation)
+// - Standard net.Listener Accept interface
+// - Standard net.Conn Read/Write interface
 // - Multi-client management
 // - Interactive message sending/receiving
 package main
 
 import (
 	"bufio"
-	"context"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -24,7 +26,6 @@ import (
 	"github.com/Script-OS/VoidBus/channel"
 	"github.com/Script-OS/VoidBus/channel/tcp"
 	"github.com/Script-OS/VoidBus/codec/base64"
-	"github.com/Script-OS/VoidBus/negotiate"
 )
 
 const (
@@ -34,15 +35,14 @@ const (
 // ClientSession represents a connected client session.
 type ClientSession struct {
 	ID       string
-	Bus      *voidbus.Bus
-	Channel  channel.Channel
+	Conn     net.Conn
 	Messages int
 }
 
 func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	fmt.Println("╔════════════════════════════════════════════════════════════╗")
-	fmt.Println("║           VoidBus Interactive Server Example              ║")
+	fmt.Println("║         VoidBus Interactive Server (net.Listener API)     ║")
 	fmt.Println("╠════════════════════════════════════════════════════════════╣")
 	fmt.Println("║ Commands:                                                  ║")
 	fmt.Println("║   <message>           - Broadcast to all clients           ║")
@@ -52,8 +52,25 @@ func main() {
 	fmt.Println("╚════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// === Step 1: Create Server Channel ===
-	fmt.Println("[1/4] Creating TCP server...")
+	// === Step 1: Create Bus ===
+	fmt.Println("[1/3] Creating VoidBus...")
+	bus, err := voidbus.New()
+	if err != nil {
+		log.Fatalf("Failed to create bus: %v", err)
+	}
+	fmt.Println("      ✓ Bus created successfully")
+
+	// === Step 2: Register Codec ===
+	fmt.Println("[2/3] Registering codecs...")
+	codec := base64.New()
+	if err := bus.RegisterCodec(codec); err != nil {
+		log.Fatalf("Failed to register codec: %v", err)
+	}
+	fmt.Printf("      ✓ Registered codec: %s (SecurityLevel: %d)\n",
+		codec.Code(), codec.SecurityLevel())
+
+	// === Step 3: Create and Register Server Channel ===
+	fmt.Println("[3/3] Creating TCP server...")
 	serverConfig := channel.ChannelConfig{
 		Address: serverAddr,
 	}
@@ -61,57 +78,66 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create server channel: %v", err)
 	}
-	fmt.Printf("      ✓ Server listening on %s\n", serverAddr)
+	fmt.Printf("      ✓ TCP server channel created\n")
 
-	// === Step 2: Create Server Negotiator ===
-	fmt.Println("[2/4] Setting up negotiator...")
+	// Add channel to bus
+	if err := bus.AddChannel(serverCh); err != nil {
+		log.Fatalf("Failed to add channel: %v", err)
+	}
 
-	serverNegotiator := negotiate.NewServerNegotiator(nil)
-
-	// Set supported channels (TCP only for this example)
-	channelBitmap := negotiate.NewChannelBitmap(0)
-	channelBitmap.SetChannel(negotiate.ChannelBitTCP)
-	serverNegotiator.SetChannelBitmap(channelBitmap)
-	fmt.Printf("      → Server Channel Bitmap: %08b (TCP)\n", channelBitmap)
-
-	// Set supported codecs (Base64 only for this example)
-	codecBitmap := negotiate.NewCodecBitmap(0)
-	codecBitmap.SetCodec(negotiate.CodecBitBase64)
-	serverNegotiator.SetCodecBitmap(codecBitmap)
-	fmt.Printf("      → Server Codec Bitmap: %08b (Base64)\n", codecBitmap)
-	fmt.Println("      ✓ Negotiator configured")
-
-	// === Step 3: Client Management ===
-	fmt.Println("[3/4] Starting client handler...")
+	// === Listen (Auto-accept with auto-negotiation) ===
+	fmt.Printf("Listening on %s (auto-negotiation enabled)...\n", serverAddr)
 	fmt.Println()
 
-	// Client sessions map
+	// Listen returns net.Listener (standard Go interface)
+	listener, err := bus.Listen(serverCh)
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+	defer listener.Close()
+
+	fmt.Printf("      ✓ Server listening on %s\n", listener.Addr().String())
+	fmt.Println()
+
+	// === Client Management ===
 	clients := make(map[string]*ClientSession)
 	var clientsMu sync.RWMutex
 	var clientCount int
 
-	// Accept clients in background
+	// Accept clients in background (using standard net.Listener Accept)
 	go func() {
 		for {
-			clientCh, err := serverCh.Accept()
+			// Accept returns net.Conn (standard Go interface)
+			conn, err := listener.Accept()
 			if err != nil {
-				// Server closed
+				// Listener closed
 				return
 			}
 
 			// Generate client ID
-			clientID := fmt.Sprintf("client-%03d", clientCount+1)
 			clientCount++
+			clientID := fmt.Sprintf("client-%03d", clientCount)
 
-			fmt.Printf("🔗 New client connected: %s\n", clientID)
+			fmt.Printf("🔗 New client connected: %s (RemoteAddr: %s)\n", clientID, conn.RemoteAddr().String())
+
+			// Register client
+			sess := &ClientSession{
+				ID:   clientID,
+				Conn: conn,
+			}
+
+			clientsMu.Lock()
+			clients[clientID] = sess
+			clientsMu.Unlock()
 
 			// Handle client in separate goroutine
-			go handleClient(clientID, clientCh, serverNegotiator, &clients, &clientsMu)
+			go handleClient(clientID, conn, &clients, &clientsMu)
 		}
 	}()
 
-	// === Step 4: Interactive Input ===
-	fmt.Println("[4/4] Ready for interactive input")
+	// === Interactive Input ===
+	fmt.Println("═════════════════════════════════════════════════════════════")
+	fmt.Println("Ready for interactive input (net.Conn Read/Write)")
 	fmt.Println("═════════════════════════════════════════════════════════════")
 	fmt.Println()
 
@@ -155,7 +181,7 @@ func main() {
 				clientsMu.RLock()
 				fmt.Printf("\n📋 Connected clients (%d):\n", len(clients))
 				for id, sess := range clients {
-					fmt.Printf("   - %s (messages: %d)\n", id, sess.Messages)
+					fmt.Printf("   - %s (messages: %d, addr: %s)\n", id, sess.Messages, sess.Conn.RemoteAddr().String())
 				}
 				if len(clients) == 0 {
 					fmt.Println("   (no clients connected)")
@@ -194,130 +220,58 @@ func main() {
 	fmt.Println("═════════════════════════════════════════════════════════════")
 	fmt.Println("Shutting down...")
 
-	// Stop all client buses
+	// Close all client connections
 	clientsMu.Lock()
 	for _, sess := range clients {
-		sess.Bus.Stop()
-		sess.Channel.Close()
+		sess.Conn.Close()
 	}
 	clientsMu.Unlock()
 
-	// Close server
-	serverCh.Close()
+	// Close listener
+	listener.Close()
+
+	// Stop bus
+	bus.Stop()
 
 	fmt.Println("✓ Server stopped")
 }
 
-// handleClient handles a connected client session.
+// handleClient handles a connected client session using standard net.Conn.
 func handleClient(
 	clientID string,
-	clientCh channel.Channel,
-	serverNegotiator *negotiate.ServerNegotiatorImpl,
+	conn net.Conn,
 	clients *map[string]*ClientSession,
 	clientsMu *sync.RWMutex,
 ) {
-	// === Step 1: Create Bus for this client ===
-	bus, err := voidbus.New()
-	if err != nil {
-		log.Printf("[%s] Failed to create bus: %v", clientID, err)
-		clientCh.Close()
-		return
-	}
+	defer func() {
+		conn.Close()
+		clientsMu.Lock()
+		delete(*clients, clientID)
+		clientsMu.Unlock()
+		fmt.Printf("🔌 [%s] Disconnected\n", clientID)
+	}()
 
-	// Register codec
-	codec := base64.New()
-	if err := bus.RegisterCodec(codec); err != nil {
-		log.Printf("[%s] Failed to register codec: %v", clientID, err)
-		bus.Stop()
-		clientCh.Close()
-		return
-	}
+	buf := make([]byte, 64*1024) // 64KB buffer for complete message
 
-	// Add channel
-	if err := bus.AddChannel(clientCh); err != nil {
-		log.Printf("[%s] Failed to add channel: %v", clientID, err)
-		bus.Stop()
-		clientCh.Close()
-		return
-	}
+	for {
+		// Set read deadline for polling
+		conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 
-	// === Step 2: Negotiation ===
-	fmt.Printf("[%s] Waiting for negotiate request...\n", clientID)
-
-	// Receive negotiate request
-	requestData, err := clientCh.Receive()
-	if err != nil {
-		log.Printf("[%s] Failed to receive negotiate request: %v", clientID, err)
-		bus.Stop()
-		clientCh.Close()
-		return
-	}
-	fmt.Printf("[%s] ← Received negotiate request (%d bytes)\n", clientID, len(requestData))
-
-	// Handle request
-	response, err := serverNegotiator.HandleRawRequest(requestData)
-	if err != nil {
-		log.Printf("[%s] Failed to handle negotiate request: %v", clientID, err)
-		bus.Stop()
-		clientCh.Close()
-		return
-	}
-
-	// Decode request for display
-	request, err := negotiate.DecodeNegotiateRequest(requestData)
-	if err == nil {
-		fmt.Printf("[%s] ← Client Codec Bitmap: %08b\n", clientID, request.CodecBitmap)
-		fmt.Printf("[%s] ← Client Channel Bitmap: %08b\n", clientID, request.ChannelBitmap)
-	}
-
-	fmt.Printf("[%s] → Server Codec Bitmap: %08b\n", clientID, response.CodecBitmap)
-	fmt.Printf("[%s] → Server Channel Bitmap: %08b\n", clientID, response.ChannelBitmap)
-	fmt.Printf("[%s] → Status: %d\n", clientID, response.Status)
-
-	// Send response
-	responseData, err := response.Encode()
-	if err != nil {
-		log.Printf("[%s] Failed to encode response: %v", clientID, err)
-		bus.Stop()
-		clientCh.Close()
-		return
-	}
-	fmt.Printf("[%s] → Sending negotiate response (%d bytes)\n", clientID, len(responseData))
-
-	if err := clientCh.Send(responseData); err != nil {
-		log.Printf("[%s] Failed to send negotiate response: %v", clientID, err)
-		bus.Stop()
-		clientCh.Close()
-		return
-	}
-
-	// Apply negotiation result
-	if response.Status == negotiate.NegotiateStatusSuccess {
-		if err := bus.SetNegotiatedBitmap(response.CodecBitmap); err != nil {
-			log.Printf("[%s] Failed to apply negotiated bitmap: %v", clientID, err)
-			bus.Stop()
-			clientCh.Close()
+		n, err := conn.Read(buf)
+		if err != nil {
+			if netErr, ok := err.(*net.OpError); ok && netErr.Timeout() {
+				// Timeout is expected for polling
+				continue
+			}
+			if err == io.EOF {
+				fmt.Printf("\n🔴 [%s] Client closed connection\n", clientID)
+				return
+			}
+			fmt.Printf("\n❌ [%s] Read error: %v\n", clientID, err)
 			return
 		}
-		fmt.Printf("[%s] ✓ Negotiation completed\n", clientID)
-	} else {
-		fmt.Printf("[%s] ✗ Negotiation rejected\n", clientID)
-		bus.Stop()
-		clientCh.Close()
-		return
-	}
 
-	// === Step 3: Start Receive ===
-	var receivedCount int
-	var sessMu sync.Mutex
-
-	bus.OnMessage(func(data []byte) {
-		sessMu.Lock()
-		receivedCount++
-		count := receivedCount
-		sessMu.Unlock()
-
-		// Update client session message count
+		// Update message count
 		clientsMu.RLock()
 		sess, ok := (*clients)[clientID]
 		clientsMu.RUnlock()
@@ -325,59 +279,16 @@ func handleClient(
 			sess.Messages++
 		}
 
-		fmt.Printf("\n📨 [%s MSG #%d] Received: %s (%d bytes)\n", clientID, count, string(data), len(data))
-		fmt.Print("> ")
-	})
+		data := make([]byte, n)
+		copy(data, buf[:n])
 
-	bus.OnError(func(err error) {
-		fmt.Printf("\n❌ [%s] Error: %v\n", clientID, err)
+		fmt.Printf("\n📨 [%s] Received: %s (%d bytes)\n", clientID, string(data), n)
 		fmt.Print("> ")
 
-		// Remove client on error
-		clientsMu.Lock()
-		delete(*clients, clientID)
-		clientsMu.Unlock()
-
-		bus.Stop()
-		clientCh.Close()
-		fmt.Printf("🔌 [%s] Disconnected\n", clientID)
-	})
-
-	if err := bus.StartReceive(); err != nil {
-		log.Printf("[%s] Failed to start receive: %v", clientID, err)
-		bus.Stop()
-		clientCh.Close()
-		return
+		// Echo back to client
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		conn.Write([]byte("Echo: " + string(data)))
 	}
-
-	// === Step 4: Register client ===
-	sess := &ClientSession{
-		ID:      clientID,
-		Bus:     bus,
-		Channel: clientCh,
-	}
-
-	clientsMu.Lock()
-	(*clients)[clientID] = sess
-	clientsMu.Unlock()
-
-	fmt.Printf("[%s] ✓ Client session ready\n", clientID)
-	fmt.Println()
-
-	// Keep client alive
-	for {
-		if !bus.IsRunning() {
-			break
-		}
-		time.Sleep(1 * time.Second)
-	}
-
-	// Cleanup
-	clientsMu.Lock()
-	delete(*clients, clientID)
-	clientsMu.Unlock()
-
-	fmt.Printf("🔌 [%s] Disconnected\n", clientID)
 }
 
 // broadcastMessage sends a message to all connected clients.
@@ -400,14 +311,13 @@ func broadcastMessage(clients *map[string]*ClientSession, clientsMu *sync.RWMute
 	clientsMu.RUnlock()
 }
 
-// sendToClient sends a message to a specific client.
+// sendToClient sends a message to a specific client using standard net.Conn Write.
 func sendToClient(sess *ClientSession, message string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := sess.Bus.SendWithContext(ctx, []byte(message)); err != nil {
+	sess.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	n, err := sess.Conn.Write([]byte(message))
+	if err != nil {
 		fmt.Printf("   ❌ [%s] Send failed: %v\n", sess.ID, err)
 	} else {
-		fmt.Printf("   ✓ [%s] Sent: %s (%d bytes)\n", sess.ID, message, len(message))
+		fmt.Printf("   ✓ [%s] Sent: %s (%d bytes)\n", sess.ID, message, n)
 	}
 }

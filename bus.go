@@ -4,6 +4,7 @@ package voidbus
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1068,6 +1069,184 @@ func (b *Bus) Validate() error {
 		return ErrChannelRequired
 	}
 	return b.config.Validate()
+}
+
+// === Dial/Listen API (net.Conn/net.Listener style) ===
+
+// Dial initiates a client connection to a server.
+// Similar to net.Dial, returns net.Conn for subsequent Read/Write operations.
+//
+// Parameters:
+//   - ch: A Channel that has been registered via AddChannel (reference passing)
+//   - ch must be a client-type Channel (e.g., tcp.NewClientChannel)
+//   - ch configuration already contains target address
+//
+// Dial internally performs:
+//  1. Connect to remote (if channel not connected)
+//  2. Create negotiation request (from registered codecs)
+//  3. Send negotiation request
+//  4. Receive negotiation response
+//  5. Apply negotiated codec/channels
+//  6. Start receive loop
+//
+// Returns net.Conn for message-oriented communication:
+//   - Read: returns one complete message per call (reassembled, decoded)
+//   - Write: writes one complete message per call (encoded, fragmented, multi-channel)
+func (b *Bus) Dial(ch channel.Channel) (net.Conn, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.connected.Load() {
+		return nil, ErrBusAlreadyRunning
+	}
+
+	// 1. Find channel ID in pool
+	var channelID string
+	ids := b.channelPool.GetChannelIDs()
+	for _, id := range ids {
+		info, err := b.channelPool.GetChannel(id)
+		if err != nil {
+			continue
+		}
+		if info.Channel == ch {
+			channelID = id
+			break
+		}
+	}
+
+	if channelID == "" {
+		return nil, ErrChannelNotRegistered
+	}
+
+	// 2. Mark as connected
+	b.connected.Store(true)
+
+	// 3. Create negotiation request (auto-generate bitmaps from registered codecs/channels)
+	request, err := b.CreateNegotiateRequest()
+	if err != nil {
+		b.connected.Store(false)
+		return nil, WrapModuleError("CreateNegotiateRequest", "bus", err)
+	}
+
+	// 4. Encode and send negotiation request
+	requestData, err := request.Encode()
+	if err != nil {
+		b.connected.Store(false)
+		return nil, WrapModuleError("EncodeNegotiateRequest", "negotiate", err)
+	}
+
+	if err := ch.Send(requestData); err != nil {
+		b.connected.Store(false)
+		return nil, WrapModuleError("SendNegotiateRequest", "channel", err)
+	}
+
+	// 5. Receive negotiation response
+	responseData, err := ch.Receive()
+	if err != nil {
+		b.connected.Store(false)
+		return nil, WrapModuleError("ReceiveNegotiateResponse", "channel", err)
+	}
+
+	response, err := negotiate.DecodeNegotiateResponse(responseData)
+	if err != nil {
+		b.connected.Store(false)
+		return nil, WrapModuleError("DecodeNegotiateResponse", "negotiate", err)
+	}
+
+	// 6. Apply negotiation response
+	if err := b.ApplyNegotiateResponse(response); err != nil {
+		b.connected.Store(false)
+		return nil, WrapModuleError("ApplyNegotiateResponse", "bus", err)
+	}
+
+	// 7. Start receive loop
+	if err := b.StartReceive(); err != nil {
+		b.connected.Store(false)
+		b.negotiated.Store(false)
+		return nil, WrapModuleError("StartReceive", "bus", err)
+	}
+
+	// 8. Create receive channel for complete messages
+	recvChan := make(chan []byte, 100)
+
+	// 9. Bridge bus receive queue to conn recvChan
+	go b.bridgeReceiveToChan(recvChan)
+
+	// 10. Create and return VoidBusConn
+	conn := newVoidBusConn(b, channelID, ch.Type(), recvChan)
+
+	return conn, nil
+}
+
+// Listen starts a server listener.
+// Similar to net.Listen, returns net.Listener for accepting client connections.
+//
+// Parameters:
+//   - ch: A ServerChannel that has been registered via AddChannel (reference passing)
+//   - ch must be a server-type Channel (e.g., tcp.NewServerChannel)
+//   - ch configuration already contains listen address
+//
+// Returns net.Listener for accepting client connections:
+//   - Accept: waits for and returns next client connection (net.Conn)
+//   - Each returned net.Conn is already negotiated
+func (b *Bus) Listen(ch channel.Channel) (net.Listener, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Check if channel is ServerChannel
+	serverCh, ok := ch.(channel.ServerChannel)
+	if !ok {
+		return nil, ErrInvalidChannelType
+	}
+
+	// Find channel ID in pool
+	var channelID string
+	ids := b.channelPool.GetChannelIDs()
+	for _, id := range ids {
+		info, err := b.channelPool.GetChannel(id)
+		if err != nil {
+			continue
+		}
+		if info.Channel == ch {
+			channelID = id
+			break
+		}
+	}
+
+	if channelID == "" {
+		return nil, ErrChannelNotRegistered
+	}
+
+	// Mark as running
+	b.running.Store(true)
+	b.connected.Store(true)
+
+	// Create and return listener
+	listener := newVoidBusListener(b, serverCh, channelID)
+
+	return listener, nil
+}
+
+// bridgeReceiveToChan bridges bus receive queue to conn recvChan.
+// This allows VoidBusConn to receive complete messages.
+func (b *Bus) bridgeReceiveToChan(recvChan chan []byte) {
+	for {
+		select {
+		case <-b.stopChan:
+			close(recvChan)
+			return
+		case data, ok := <-b.recvQueue:
+			if !ok {
+				close(recvChan)
+				return
+			}
+			select {
+			case recvChan <- data:
+			default:
+				// Channel full, drop message
+			}
+		}
+	}
 }
 
 // uint32ToBytes32 converts uint32 to [32]byte.

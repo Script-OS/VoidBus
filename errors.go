@@ -306,16 +306,18 @@ var (
 	ErrKeyRefreshFailed  = errors.New("key refresh failed")
 
 	// Bus errors
-	ErrBusConfig          = errors.New("bus configuration error")
-	ErrModuleNotSet       = errors.New("module not set")
-	ErrHandlerNotSet      = errors.New("handler not set")
-	ErrBusAlreadyRunning  = errors.New("bus already running")
-	ErrBusNotRunning      = errors.New("bus not running")
-	ErrSerializerRequired = errors.New("serializer required")
-	ErrCodecChainRequired = errors.New("codec chain required")
-	ErrChannelRequired    = errors.New("channel required")
-	ErrSendFailed         = errors.New("send failed")
-	ErrReceiveFailed      = errors.New("receive failed")
+	ErrBusConfig            = errors.New("bus configuration error")
+	ErrModuleNotSet         = errors.New("module not set")
+	ErrHandlerNotSet        = errors.New("handler not set")
+	ErrBusAlreadyRunning    = errors.New("bus already running")
+	ErrBusNotRunning        = errors.New("bus not running")
+	ErrSerializerRequired   = errors.New("serializer required")
+	ErrCodecChainRequired   = errors.New("codec chain required")
+	ErrChannelRequired      = errors.New("channel required")
+	ErrSendFailed           = errors.New("send failed")
+	ErrReceiveFailed        = errors.New("receive failed")
+	ErrChannelNotRegistered = errors.New("channel not registered in bus")
+	ErrInvalidChannelType   = errors.New("invalid channel type for this operation")
 
 	// Policy errors
 	ErrInvalidPolicy = errors.New("invalid policy configuration")
