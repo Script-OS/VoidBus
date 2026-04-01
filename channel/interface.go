@@ -23,6 +23,9 @@ const (
 	TypeUDP  ChannelType = "udp"
 	TypeICMP ChannelType = "icmp"
 	TypeQUIC ChannelType = "quic"
+	TypeWS   ChannelType = "ws"   // WebSocket (default negotiation channel)
+	TypeHTTP ChannelType = "http" // HTTP/HTTPS tunnel
+	TypeDNS  ChannelType = "dns"  // DNS tunnel
 )
 
 // Common channel errors
@@ -75,6 +78,16 @@ type Channel interface {
 	// Used for adaptive fragmentation in v2.0 architecture.
 	// Returns 0 if no specific MTU is known.
 	DefaultMTU() int
+
+	// IsReliable returns whether the channel provides reliable transmission.
+	// Reliable channels (TCP, QUIC, WebSocket) rely on their own protocols for reliability.
+	// Unreliable channels (UDP) require VoidBus-level ACK/NAK mechanism.
+	IsReliable() bool
+
+	// AckTimeout returns the ACK timeout duration for unreliable channels.
+	// Only used for channels where IsReliable() returns false.
+	// Returns 0 for reliable channels (timeout not needed).
+	AckTimeout() time.Duration
 }
 
 // ServerChannel extends Channel with server-side capabilities.

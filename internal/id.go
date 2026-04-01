@@ -7,9 +7,25 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 )
+
+// RandomIntRange generates a random integer in range [min, max].
+// Used for generating random padding length and other random values.
+func RandomIntRange(min, max int) int {
+	if min >= max {
+		return min
+	}
+	rangeSize := max - min + 1
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(rangeSize)))
+	if err != nil {
+		// Fallback to time-based random
+		return min + int(time.Now().UnixNano()%int64(rangeSize))
+	}
+	return min + int(n.Int64())
+}
 
 // GenerateID generates a unique identifier.
 // Returns a random UUID v4 format string.

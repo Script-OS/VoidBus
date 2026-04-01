@@ -259,6 +259,18 @@ func (c *ClientChannel) DefaultMTU() int {
 	return 64 * 1024 // 64KB
 }
 
+// IsReliable implements channel.Channel.IsReliable.
+// TCP provides reliable transmission, no need for VoidBus-level ACK.
+func (c *ClientChannel) IsReliable() bool {
+	return true
+}
+
+// AckTimeout implements channel.Channel.AckTimeout.
+// TCP is reliable, returns 0 (not used).
+func (c *ClientChannel) AckTimeout() time.Duration {
+	return 0
+}
+
 // handleDisconnect handles connection disconnect.
 func (c *ClientChannel) handleDisconnect() {
 	c.mu.Lock()
@@ -411,6 +423,18 @@ func (s *ServerChannel) Type() channel.ChannelType {
 // TCP server channel does not have MTU, returns 0.
 func (s *ServerChannel) DefaultMTU() int {
 	return 0 // Server channel doesn't have MTU
+}
+
+// IsReliable implements channel.Channel.IsReliable.
+// TCP server is reliable.
+func (s *ServerChannel) IsReliable() bool {
+	return true
+}
+
+// AckTimeout implements channel.Channel.AckTimeout.
+// TCP is reliable, returns 0.
+func (s *ServerChannel) AckTimeout() time.Duration {
+	return 0
 }
 
 // ListenAddress implements channel.ServerChannel.ListenAddress.
@@ -592,6 +616,18 @@ func (a *AcceptedChannel) Type() channel.ChannelType {
 // TCP has no inherent MTU limit, but we use 64KB as a reasonable default.
 func (a *AcceptedChannel) DefaultMTU() int {
 	return 64 * 1024 // 64KB
+}
+
+// IsReliable implements channel.Channel.IsReliable.
+// TCP accepted connection is reliable.
+func (a *AcceptedChannel) IsReliable() bool {
+	return true
+}
+
+// AckTimeout implements channel.Channel.AckTimeout.
+// TCP is reliable, returns 0.
+func (a *AcceptedChannel) AckTimeout() time.Duration {
+	return 0
 }
 
 // handleDisconnect handles connection disconnect.
