@@ -8,9 +8,9 @@ import (
 	"github.com/Script-OS/VoidBus/internal"
 )
 
-// V2Header is the v2.0 fragment header metadata.
+// Header is the v2.0 fragment header metadata.
 // Attached to each fragment for routing and decoding.
-type V2Header struct {
+type Header struct {
 	// === 核心字段（必须） ===
 	SessionID     string // UUID，标识本次发送
 	FragmentIndex uint16 // 分片序号（0-based）
@@ -31,55 +31,55 @@ type V2Header struct {
 	Flags uint8 // 标志位集合
 }
 
-// Flag constants for V2Header
+// Flag constants for Header
 const (
-	FlagV2IsLast     uint8 = 0x01 // 是否最后一个分片
-	FlagV2Retransmit uint8 = 0x02 // 是否重传分片
-	FlagV2IsNAK      uint8 = 0x04 // 是否NAK请求
-	FlagV2IsEND_ACK  uint8 = 0x08 // 是否END_ACK确认
+	FlagIsLast     uint8 = 0x01 // 是否最后一个分片
+	FlagRetransmit uint8 = 0x02 // 是否重传分片
+	FlagIsNAK      uint8 = 0x04 // 是否NAK请求
+	FlagIsENDACK  uint8 = 0x08 // 是否END_ACK确认
 )
 
 // IsLastFragment returns true if this is the last fragment.
-func (h *V2Header) IsLastFragment() bool {
-	return (h.Flags & FlagV2IsLast) != 0
+func (h *Header) IsLastFragment() bool {
+	return (h.Flags & FlagIsLast) != 0
 }
 
 // SetIsLast sets the IsLast flag.
-func (h *V2Header) SetIsLast(isLast bool) {
+func (h *Header) SetIsLast(isLast bool) {
 	if isLast {
-		h.Flags |= FlagV2IsLast
+		h.Flags |= FlagIsLast
 	} else {
-		h.Flags &= ^FlagV2IsLast
+		h.Flags &= ^FlagIsLast
 	}
 }
 
 // IsRetransmit returns true if this is a retransmitted fragment.
-func (h *V2Header) IsRetransmit() bool {
-	return (h.Flags & FlagV2Retransmit) != 0
+func (h *Header) IsRetransmit() bool {
+	return (h.Flags & FlagRetransmit) != 0
 }
 
 // SetRetransmit sets the Retransmit flag.
-func (h *V2Header) SetRetransmit(isRetransmit bool) {
+func (h *Header) SetRetransmit(isRetransmit bool) {
 	if isRetransmit {
-		h.Flags |= FlagV2Retransmit
+		h.Flags |= FlagRetransmit
 	} else {
-		h.Flags &= ^FlagV2Retransmit
+		h.Flags &= ^FlagRetransmit
 	}
 }
 
 // IsNAK returns true if this is a NAK message.
-func (h *V2Header) IsNAK() bool {
-	return (h.Flags & FlagV2IsNAK) != 0
+func (h *Header) IsNAK() bool {
+	return (h.Flags & FlagIsNAK) != 0
 }
 
 // IsEND_ACK returns true if this is an END_ACK message.
-func (h *V2Header) IsEND_ACK() bool {
-	return (h.Flags & FlagV2IsEND_ACK) != 0
+func (h *Header) IsEND_ACK() bool {
+	return (h.Flags & FlagIsENDACK) != 0
 }
 
-// NewV2Header creates new v2.0 fragment header.
-func NewV2Header(sessionID string, index, total uint16, codecDepth uint8, codecHash [32]byte) *V2Header {
-	return &V2Header{
+// NewHeader creates new v2.0 fragment header.
+func NewHeader(sessionID string, index, total uint16, codecDepth uint8, codecHash [32]byte) *Header {
+	return &Header{
 		SessionID:     sessionID,
 		FragmentIndex: index,
 		FragmentTotal: total,
@@ -91,22 +91,22 @@ func NewV2Header(sessionID string, index, total uint16, codecDepth uint8, codecH
 }
 
 // SetDataChecksum calculates and sets checksum for fragment data.
-func (h *V2Header) SetDataChecksum(data []byte) {
+func (h *Header) SetDataChecksum(data []byte) {
 	h.DataChecksum = internal.CalculateChecksum(data)
 }
 
 // VerifyDataChecksum verifies fragment data against checksum.
-func (h *V2Header) VerifyDataChecksum(data []byte) bool {
+func (h *Header) VerifyDataChecksum(data []byte) bool {
 	return internal.VerifyChecksum(data, h.DataChecksum)
 }
 
 // SetDataHash sets the overall data hash for integrity verification.
-func (h *V2Header) SetDataHash(data []byte) {
+func (h *Header) SetDataHash(data []byte) {
 	h.DataHash = internal.ComputeDataHash(data)
 }
 
 // VerifyDataHash verifies overall data integrity after reassembly.
-func (h *V2Header) VerifyDataHash(data []byte) bool {
+func (h *Header) VerifyDataHash(data []byte) bool {
 	return internal.VerifyDataHash(data, h.DataHash)
 }
 
@@ -196,12 +196,12 @@ func NewNegotiationResponse(accepted bool, commonCodes []string, maxDepth int, s
 
 // === Binary Encoding/Decoding ===
 
-// HeaderSize is the fixed size of V2Header in binary form (excluding SessionID).
+// HeaderSize is the fixed size of Header in binary form (excluding SessionID).
 const HeaderBaseSize = 2 + 2 + 1 + 32 + 4 + 32 + 8 + 1 // 82 bytes
 
 // Encode encodes the header and data into a binary packet.
 // Format: [SessionIDLen:2][SessionID:N][HeaderBase:82][Data:M]
-func (h *V2Header) Encode(data []byte) []byte {
+func (h *Header) Encode(data []byte) []byte {
 	sessionIDBytes := []byte(h.SessionID)
 	sessionIDLen := len(sessionIDBytes)
 
@@ -264,8 +264,8 @@ func (h *V2Header) Encode(data []byte) []byte {
 	return result
 }
 
-// DecodeV2Header decodes a binary packet into header and data.
-func DecodeV2Header(packet []byte) (*V2Header, []byte, error) {
+// DecodeHeader decodes a binary packet into header and data.
+func DecodeHeader(packet []byte) (*Header, []byte, error) {
 	if len(packet) < 2 {
 		return nil, nil, ErrV2InvalidPacket
 	}
@@ -284,7 +284,7 @@ func DecodeV2Header(packet []byte) (*V2Header, []byte, error) {
 	sessionID := string(packet[offset : offset+sessionIDLen])
 	offset += sessionIDLen
 
-	header := &V2Header{
+	header := &Header{
 		SessionID: sessionID,
 	}
 

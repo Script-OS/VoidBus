@@ -8,8 +8,8 @@ import (
 	"github.com/Script-OS/VoidBus/internal"
 )
 
-// V2FragmentConfig provides configuration for v2.0 fragmentation.
-type V2FragmentConfig struct {
+// FragmentConfig provides configuration for v2.0 fragmentation.
+type FragmentConfig struct {
 	MinMTU             int           // 最小MTU (默认: 64)
 	MaxMTU             int           // 最大MTU (默认: 65535)
 	DefaultMTU         int           // 默认MTU (默认: 1024)
@@ -19,9 +19,9 @@ type V2FragmentConfig struct {
 	HeaderOverhead     int           // Header开销字节 (默认: 64)
 }
 
-// DefaultV2FragmentConfig returns default v2.0 configuration.
-func DefaultV2FragmentConfig() V2FragmentConfig {
-	return V2FragmentConfig{
+// DefaultFragmentConfig returns default v2.0 configuration.
+func DefaultFragmentConfig() FragmentConfig {
+	return FragmentConfig{
 		MinMTU:             64,
 		MaxMTU:             65535,
 		DefaultMTU:         1024,
@@ -32,10 +32,10 @@ func DefaultV2FragmentConfig() V2FragmentConfig {
 	}
 }
 
-// V2FragmentManager manages v2.0 fragmentation with adaptive splitting.
-type V2FragmentManager struct {
+// FragmentManager manages v2.0 fragmentation with adaptive splitting.
+type FragmentManager struct {
 	mu     sync.RWMutex
-	config V2FragmentConfig
+	config FragmentConfig
 
 	// Send buffers (sender side)
 	sendBuffers map[string]*SendBuffer
@@ -47,9 +47,9 @@ type V2FragmentManager struct {
 	stopGC chan struct{}
 }
 
-// NewV2FragmentManager creates a new V2FragmentManager.
-func NewV2FragmentManager(config V2FragmentConfig) *V2FragmentManager {
-	mgr := &V2FragmentManager{
+// NewFragmentManager creates a new FragmentManager.
+func NewFragmentManager(config FragmentConfig) *FragmentManager {
+	mgr := &FragmentManager{
 		config:      config,
 		sendBuffers: make(map[string]*SendBuffer),
 		recvBuffers: make(map[string]*RecvBuffer),
@@ -63,17 +63,17 @@ func NewV2FragmentManager(config V2FragmentConfig) *V2FragmentManager {
 }
 
 // Name returns the module name (implements Module interface).
-func (m *V2FragmentManager) Name() string {
+func (m *FragmentManager) Name() string {
 	return "FragmentManager"
 }
 
 // ModuleStats returns module statistics (implements Module interface).
-func (m *V2FragmentManager) ModuleStats() interface{} {
+func (m *FragmentManager) ModuleStats() interface{} {
 	return m.Stats()
 }
 
 // gcLoop periodically cleans up expired buffers.
-func (m *V2FragmentManager) gcLoop() {
+func (m *FragmentManager) gcLoop() {
 	ticker := time.NewTicker(m.config.GCInterval)
 	defer ticker.Stop()
 
@@ -88,14 +88,14 @@ func (m *V2FragmentManager) gcLoop() {
 }
 
 // Stop stops the manager and GC loop.
-func (m *V2FragmentManager) Stop() {
+func (m *FragmentManager) Stop() {
 	close(m.stopGC)
 }
 
 // === Send Buffer Operations ===
 
 // CreateSendBuffer creates a new send buffer for a session.
-func (m *V2FragmentManager) CreateSendBuffer(sessionID string, data []byte) *SendBuffer {
+func (m *FragmentManager) CreateSendBuffer(sessionID string, data []byte) *SendBuffer {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -105,7 +105,7 @@ func (m *V2FragmentManager) CreateSendBuffer(sessionID string, data []byte) *Sen
 }
 
 // GetSendBuffer retrieves a send buffer.
-func (m *V2FragmentManager) GetSendBuffer(sessionID string) (*SendBuffer, error) {
+func (m *FragmentManager) GetSendBuffer(sessionID string) (*SendBuffer, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -117,7 +117,7 @@ func (m *V2FragmentManager) GetSendBuffer(sessionID string) (*SendBuffer, error)
 }
 
 // RemoveSendBuffer removes a send buffer.
-func (m *V2FragmentManager) RemoveSendBuffer(sessionID string) error {
+func (m *FragmentManager) RemoveSendBuffer(sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -128,7 +128,7 @@ func (m *V2FragmentManager) RemoveSendBuffer(sessionID string) error {
 // === Receive Buffer Operations ===
 
 // CreateRecvBuffer creates a new receive buffer for a session.
-func (m *V2FragmentManager) CreateRecvBuffer(sessionID string, total uint16, codecDepth uint8, codecHash [32]byte, dataHash [32]byte) *RecvBuffer {
+func (m *FragmentManager) CreateRecvBuffer(sessionID string, total uint16, codecDepth uint8, codecHash [32]byte, dataHash [32]byte) *RecvBuffer {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -138,7 +138,7 @@ func (m *V2FragmentManager) CreateRecvBuffer(sessionID string, total uint16, cod
 }
 
 // GetRecvBuffer retrieves a receive buffer.
-func (m *V2FragmentManager) GetRecvBuffer(sessionID string) (*RecvBuffer, error) {
+func (m *FragmentManager) GetRecvBuffer(sessionID string) (*RecvBuffer, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -150,7 +150,7 @@ func (m *V2FragmentManager) GetRecvBuffer(sessionID string) (*RecvBuffer, error)
 }
 
 // AddFragmentToRecv adds a fragment to receive buffer.
-func (m *V2FragmentManager) AddFragmentToRecv(sessionID string, index uint16, data []byte, checksum uint32) (bool, error) {
+func (m *FragmentManager) AddFragmentToRecv(sessionID string, index uint16, data []byte, checksum uint32) (bool, error) {
 	buf, err := m.GetRecvBuffer(sessionID)
 	if err != nil {
 		return false, err
@@ -159,7 +159,7 @@ func (m *V2FragmentManager) AddFragmentToRecv(sessionID string, index uint16, da
 }
 
 // RemoveRecvBuffer removes a receive buffer.
-func (m *V2FragmentManager) RemoveRecvBuffer(sessionID string) error {
+func (m *FragmentManager) RemoveRecvBuffer(sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -171,7 +171,7 @@ func (m *V2FragmentManager) RemoveRecvBuffer(sessionID string) error {
 
 // AdaptiveSplit splits data adaptively based on MTU.
 // Returns fragments with V2Header overhead accounted.
-func (m *V2FragmentManager) AdaptiveSplit(data []byte, mtu int) ([][]byte, []uint32, error) {
+func (m *FragmentManager) AdaptiveSplit(data []byte, mtu int) ([][]byte, []uint32, error) {
 	// Validate MTU
 	if mtu < m.config.MinMTU {
 		mtu = m.config.MinMTU
@@ -208,7 +208,7 @@ func (m *V2FragmentManager) AdaptiveSplit(data []byte, mtu int) ([][]byte, []uin
 }
 
 // Reassemble reassembles fragments from a complete receive buffer.
-func (m *V2FragmentManager) Reassemble(sessionID string) ([]byte, error) {
+func (m *FragmentManager) Reassemble(sessionID string) ([]byte, error) {
 	buf, err := m.GetRecvBuffer(sessionID)
 	if err != nil {
 		return nil, err
@@ -233,7 +233,7 @@ func (m *V2FragmentManager) Reassemble(sessionID string) ([]byte, error) {
 // === NAK Handling ===
 
 // GetMissingFragments returns missing fragments for a session.
-func (m *V2FragmentManager) GetMissingFragments(sessionID string) ([]uint16, error) {
+func (m *FragmentManager) GetMissingFragments(sessionID string) ([]uint16, error) {
 	buf, err := m.GetRecvBuffer(sessionID)
 	if err != nil {
 		return nil, err
@@ -242,7 +242,7 @@ func (m *V2FragmentManager) GetMissingFragments(sessionID string) ([]uint16, err
 }
 
 // GetRetransmitFragments returns fragment data for retransmission.
-func (m *V2FragmentManager) GetRetransmitFragments(sessionID string, indices []uint16) ([]*FragmentEntry, error) {
+func (m *FragmentManager) GetRetransmitFragments(sessionID string, indices []uint16) ([]*FragmentEntry, error) {
 	buf, err := m.GetSendBuffer(sessionID)
 	if err != nil {
 		return nil, err
@@ -253,7 +253,7 @@ func (m *V2FragmentManager) GetRetransmitFragments(sessionID string, indices []u
 // === Session Completion ===
 
 // CompleteSendSession marks a send session as complete and removes buffer.
-func (m *V2FragmentManager) CompleteSendSession(sessionID string) error {
+func (m *FragmentManager) CompleteSendSession(sessionID string) error {
 	buf, err := m.GetSendBuffer(sessionID)
 	if err != nil {
 		return err
@@ -265,7 +265,7 @@ func (m *V2FragmentManager) CompleteSendSession(sessionID string) error {
 }
 
 // CompleteRecvSession marks a receive session as complete.
-func (m *V2FragmentManager) CompleteRecvSession(sessionID string) bool {
+func (m *FragmentManager) CompleteRecvSession(sessionID string) bool {
 	buf, err := m.GetRecvBuffer(sessionID)
 	if err != nil {
 		return false
@@ -276,7 +276,7 @@ func (m *V2FragmentManager) CompleteRecvSession(sessionID string) bool {
 // === Cleanup ===
 
 // CleanupExpired removes expired buffers.
-func (m *V2FragmentManager) CleanupExpired() int {
+func (m *FragmentManager) CleanupExpired() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -305,7 +305,7 @@ func (m *V2FragmentManager) CleanupExpired() int {
 // === Statistics ===
 
 // Stats returns manager statistics.
-func (m *V2FragmentManager) Stats() V2FragmentStats {
+func (m *FragmentManager) Stats() FragmentStats {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -324,7 +324,7 @@ func (m *V2FragmentManager) Stats() V2FragmentStats {
 		}
 	}
 
-	return V2FragmentStats{
+	return FragmentStats{
 		ActiveSendBuffers: activeSend,
 		ActiveRecvBuffers: activeRecv,
 		TotalSendBuffers:  len(m.sendBuffers),
@@ -332,8 +332,8 @@ func (m *V2FragmentManager) Stats() V2FragmentStats {
 	}
 }
 
-// V2FragmentStats holds manager statistics.
-type V2FragmentStats struct {
+// FragmentStats holds manager statistics.
+type FragmentStats struct {
 	ActiveSendBuffers int
 	ActiveRecvBuffers int
 	TotalSendBuffers  int
@@ -343,14 +343,14 @@ type V2FragmentStats struct {
 // === Count ===
 
 // Count returns total number of pending buffers.
-func (m *V2FragmentManager) Count() int {
+func (m *FragmentManager) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.sendBuffers) + len(m.recvBuffers)
 }
 
 // ClearAll clears all buffers.
-func (m *V2FragmentManager) ClearAll() error {
+func (m *FragmentManager) ClearAll() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sendBuffers = make(map[string]*SendBuffer)
