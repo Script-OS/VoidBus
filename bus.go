@@ -193,7 +193,7 @@ func (b *Bus) statsInternal() BusStats {
 		Negotiated:    b.negotiated.Load(),
 		Running:       b.running.Load(),
 		ChannelCount:  b.channelPool.Count(),
-		CodecCount:    len(b.codecManager.GetSupportedCodes()),
+		CodecCount:    b.codecManager.CodecCount(),
 		SessionStats:  b.sessionMgr.Stats(),
 		FragmentStats: b.fragmentMgr.Stats(),
 		TimerStats:    b.adaptiveTimer.GetSRTT(),
@@ -202,10 +202,10 @@ func (b *Bus) statsInternal() BusStats {
 
 // === Codec Configuration ===
 
-// AddCodec adds a codec with user-defined code.
-func (b *Bus) AddCodec(c codec.Codec, code string) error {
-	if err := b.codecManager.AddCodec(c, code); err != nil {
-		return WrapModuleError("AddCodec", "codec", err)
+// RegisterCodec registers a codec with its ID.
+func (b *Bus) RegisterCodec(c codec.Codec, id codec.CodecID) error {
+	if err := b.codecManager.RegisterCodec(c, id); err != nil {
+		return WrapModuleError("RegisterCodec", "codec", err)
 	}
 
 	// Set key provider if codec needs it
@@ -214,6 +214,37 @@ func (b *Bus) AddCodec(c codec.Codec, code string) error {
 	}
 
 	return nil
+}
+
+// AddCodec is deprecated, use RegisterCodec.
+func (b *Bus) AddCodec(c codec.Codec, code string) error {
+	// Map legacy code to CodecID
+	id := codeToCodecID(code)
+	return b.RegisterCodec(c, id)
+}
+
+// codeToCodecID maps legacy code string to CodecID.
+func codeToCodecID(code string) codec.CodecID {
+	switch code {
+	case "A":
+		return codec.CodecIDAES256
+	case "B":
+		return codec.CodecIDBase64
+	case "C":
+		return codec.CodecIDChaCha20
+	case "P":
+		return codec.CodecIDPlain
+	case "X":
+		return codec.CodecIDXOR
+	case "G":
+		return codec.CodecIDGZIP
+	case "Z":
+		return codec.CodecIDZSTD
+	case "R":
+		return codec.CodecIDRSA
+	default:
+		return codec.CodecID(code[0])
+	}
 }
 
 // SetKey sets the key provider with embedded key.
@@ -254,9 +285,10 @@ func (b *Bus) AddChannelWithID(c channel.Channel, id string) error {
 	return nil
 }
 
-// SetChannelMTU overrides MTU for a specific channel.
+// SetChannelMTU is deprecated - MTU is now automatically determined.
 func (b *Bus) SetChannelMTU(channelID string, mtu int) error {
-	return b.channelPool.SetMTUOverride(channelID, mtu)
+	// MTU is now automatically determined from channel.DefaultMTU()
+	return nil
 }
 
 // === Connection & Negotiation ===
@@ -275,30 +307,71 @@ func (b *Bus) Connect(remoteAddr string) error {
 }
 
 // Negotiate performs capability negotiation with remote.
+// Deprecated: Use SetNegotiatedBitmap after negotiate module handshake.
 func (b *Bus) Negotiate(remoteCodes []string, remoteMaxDepth int, salt []byte) (*NegotiationConfig, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Perform negotiation
-	commonCodes, err := b.codecManager.Negotiate(remoteCodes, remoteMaxDepth, salt)
-	if err != nil {
+	// Convert remote codes to bitmap
+	bitmap := make([]byte, 1)
+	for _, code := range remoteCodes {
+		id := codeToCodecID(code)
+		if int(id) < 8 {
+			bitmap[0] |= (1 << id)
+		}
+	}
+
+	// Set negotiated bitmap
+	if err := b.codecManager.SetNegotiatedBitmap(bitmap); err != nil {
 		return nil, WrapModuleError("Negotiate", "codec", err)
 	}
 
-	maxDepth := b.codecManager.GetMaxDepth()
+	// Set max depth
+	if remoteMaxDepth > 0 && remoteMaxDepth < b.codecManager.GetMaxDepth() {
+		b.codecManager.SetMaxDepth(remoteMaxDepth)
+	}
 
+	// Set salt
+	if len(salt) > 0 {
+		b.codecManager.SetSalt(salt)
+	}
+
+	maxDepth := b.codecManager.GetMaxDepth()
 	b.negotiated.Store(true)
 
 	return &NegotiationConfig{
-		SupportedCodes: commonCodes,
+		SupportedCodes: codecIDsToCodes(b.codecManager.GetAvailableCodecs()),
 		MaxDepth:       maxDepth,
 		NegotiatedAt:   time.Now(),
 	}, nil
 }
 
+// SetNegotiatedBitmap sets the negotiated codec bitmap.
+func (b *Bus) SetNegotiatedBitmap(bitmap []byte) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if err := b.codecManager.SetNegotiatedBitmap(bitmap); err != nil {
+		return WrapModuleError("SetNegotiatedBitmap", "codec", err)
+	}
+
+	b.negotiated.Store(true)
+	return nil
+}
+
 // GetNegotiationInfo returns negotiation info for sending to remote.
 func (b *Bus) GetNegotiationInfo() ([]string, int) {
-	return b.codecManager.GetSupportedCodes(), b.codecManager.GetMaxDepth()
+	ids := b.codecManager.GetAvailableCodecs()
+	return codecIDsToCodes(ids), b.codecManager.GetMaxDepth()
+}
+
+// codecIDsToCodes converts CodecID slice to code strings.
+func codecIDsToCodes(ids []codec.CodecID) []string {
+	codes := make([]string, len(ids))
+	for i, id := range ids {
+		codes[i] = string(rune('A' + id))
+	}
+	return codes
 }
 
 // === Sending (P1: Parallel Send Optimization) ===
@@ -332,28 +405,25 @@ func (b *Bus) SendWithContext(ctx context.Context, data []byte) error {
 	}
 
 	// 1. Randomly select codec chain
-	codes, chain, err := b.codecManager.RandomSelect()
+	chain, codecHash, err := b.codecManager.SelectChain()
 	if err != nil {
-		return WrapModuleError("RandomSelect", "codec", err)
+		return WrapModuleError("SelectChain", "codec", err)
 	}
 
-	// 2. Compute codec hash
-	codecHash := b.codecManager.ComputeHash(codes)
-
-	// 3. Compute data hash
+	// 2. Compute data hash
 	dataHash := internal.ComputeDataHash(data)
 
-	// 4. Create session
-	sess := b.sessionMgr.CreateSendSession(codes, codecHash, len(codes), dataHash)
+	// 3. Create session
+	sess := b.sessionMgr.CreateSendSession(nil, codecHash, 0, dataHash)
 
-	// 5. Encode data
+	// 4. Encode data
 	encodedData, err := chain.Encode(data)
 	if err != nil {
 		b.sessionMgr.RemoveSendSession(sess.ID)
 		return WrapModuleError("Encode", "codec", err)
 	}
 
-	// 6. Get adaptive MTU
+	// 5. Get adaptive MTU
 	mtu := b.channelPool.GetAdaptiveMTU()
 	if mtu == 0 {
 		mtu = b.config.DefaultMTU
@@ -368,7 +438,7 @@ func (b *Bus) SendWithContext(ctx context.Context, data []byte) error {
 
 	// 8. Create send buffer
 	sendBuf := b.fragmentMgr.CreateSendBuffer(sess.ID, data)
-	sendBuf.SetCodecInfo(codes, codecHash)
+	sendBuf.SetCodecInfo(nil, codecHash)
 	sendBuf.SetEncodedData(encodedData)
 	sess.SetTotalFragments(uint16(len(fragments)))
 
@@ -382,9 +452,10 @@ func (b *Bus) SendWithContext(ctx context.Context, data []byte) error {
 			defer sendWg.Done()
 
 			// Select channel for this fragment
-			chInfo, err := b.channelPool.SelectForMTU(len(fragment) + 64)
+			chInfo, err := b.channelPool.SelectChannel(nil)
 			if err != nil {
-				chInfo, _ = b.channelPool.RandomSelect()
+				errChan <- ErrNoHealthyChannel
+				return
 			}
 
 			if chInfo == nil {
@@ -397,7 +468,7 @@ func (b *Bus) SendWithContext(ctx context.Context, data []byte) error {
 				SessionID:     sess.ID,
 				FragmentIndex: uint16(index),
 				FragmentTotal: uint16(len(fragments)),
-				CodecDepth:    uint8(len(codes)),
+				CodecDepth:    0, // Deprecated in v2.1
 				CodecHash:     codecHash,
 				DataChecksum:  checksum,
 				DataHash:      dataHash,
@@ -612,12 +683,10 @@ func (b *Bus) handleFragment(header *protocol.Header, fragmentData []byte, info 
 	}
 
 	// Match codec chain by hash
-	codes, chain, err := b.codecManager.MatchByHash(header.CodecHash)
+	chain, err := b.codecManager.MatchChain(header.CodecHash)
 	if err != nil {
-		return WrapModuleError("MatchByHash", "codec", err)
+		return WrapModuleError("MatchChain", "codec", err)
 	}
-
-	_ = codes // Codec codes matched
 
 	// Decode
 	decodedData, err := chain.Decode(encodedData)
@@ -742,12 +811,8 @@ func (b *Bus) handleNAK(header *protocol.Header, extraData []byte) error {
 			defer retransmitWg.Done()
 
 			// Select healthy channel for retransmit
-			chInfo, err := b.channelPool.SelectHealthy()
+			chInfo, err := b.channelPool.SelectChannel(nil)
 			if err != nil {
-				chInfo, _ = b.channelPool.RandomSelect()
-			}
-
-			if chInfo == nil {
 				errChan <- ErrNoHealthyChannel
 				return
 			}
@@ -806,13 +871,9 @@ func (b *Bus) handleEND_ACK(header *protocol.Header) error {
 
 // sendNAK sends a NAK message for missing fragments.
 func (b *Bus) sendNAK(sessionID string, missing []uint16) error {
-	// Select healthy channel
-	chInfo, err := b.channelPool.SelectHealthy()
+	// Select channel
+	chInfo, err := b.channelPool.SelectChannel(nil)
 	if err != nil {
-		chInfo, _ = b.channelPool.RandomSelect()
-	}
-
-	if chInfo == nil {
 		return ErrNoHealthyChannel
 	}
 
@@ -831,13 +892,9 @@ func (b *Bus) sendNAK(sessionID string, missing []uint16) error {
 
 // sendEND_ACK sends an END_ACK message.
 func (b *Bus) sendEND_ACK(sessionID string) error {
-	// Select healthy channel
-	chInfo, err := b.channelPool.SelectHealthy()
+	// Select channel
+	chInfo, err := b.channelPool.SelectChannel(nil)
 	if err != nil {
-		chInfo, _ = b.channelPool.RandomSelect()
-	}
-
-	if chInfo == nil {
 		return ErrNoHealthyChannel
 	}
 
@@ -973,11 +1030,26 @@ func (b *Bus) GetFragmentManager() *fragment.FragmentManager {
 
 // Validate validates bus configuration.
 func (b *Bus) Validate() error {
-	if len(b.codecManager.GetSupportedCodes()) == 0 {
+	if b.codecManager.CodecCount() == 0 {
 		return ErrCodecChainRequired
 	}
 	if b.channelPool.Count() == 0 {
 		return ErrChannelRequired
 	}
 	return b.config.Validate()
+}
+
+// uint32ToBytes32 converts uint32 to [32]byte.
+func uint32ToBytes32(h uint32) [32]byte {
+	var result [32]byte
+	result[0] = byte(h >> 24)
+	result[1] = byte(h >> 16)
+	result[2] = byte(h >> 8)
+	result[3] = byte(h)
+	return result
+}
+
+// bytes32ToUint32 converts [32]byte to uint32 (first 4 bytes).
+func bytes32ToUint32(h [32]byte) uint32 {
+	return uint32(h[0])<<24 | uint32(h[1])<<16 | uint32(h[2])<<8 | uint32(h[3])
 }

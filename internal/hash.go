@@ -132,6 +132,15 @@ func VerifyDataHash(data []byte, expected [32]byte) bool {
 	return hash == expected
 }
 
+// ComputeHashFromBytes computes SHA256 hash of byte data with optional salt.
+func ComputeHashFromBytes(data, salt []byte) [32]byte {
+	if len(salt) > 0 {
+		combined := append(salt, data...)
+		return sha256.Sum256(combined)
+	}
+	return sha256.Sum256(data)
+}
+
 // EncodeHash encodes hash to 4-byte compact format for metadata.
 // Uses first 4 bytes of SHA256, sufficient for fragment matching.
 func EncodeHashCompact(hash [32]byte) uint32 {

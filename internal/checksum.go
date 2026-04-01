@@ -77,3 +77,17 @@ func BytesToChecksum(data []byte) uint32 {
 func CalculateChecksumUint32(data []byte) uint32 {
 	return CalculateChecksum(data)
 }
+
+// ComputeChecksumCRC32 computes CRC32 checksum.
+func ComputeChecksumCRC32(data []byte) uint32 {
+	return crc32.ChecksumIEEE(data)
+}
+
+// ComputeChecksumCRC32WithSalt computes CRC32 checksum with salt.
+func ComputeChecksumCRC32WithSalt(data, salt []byte) uint32 {
+	// Combine data and salt
+	combined := make([]byte, len(data)+len(salt))
+	copy(combined, data)
+	copy(combined[len(data):], salt)
+	return crc32.ChecksumIEEE(combined)
+}
