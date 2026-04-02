@@ -233,14 +233,31 @@ func (m *CodecManager) SelectChain() (CodecChain, [32]byte, error) {
 		return nil, [32]byte{}, ErrCodecNotFound
 	}
 
-	// Random depth (1 to maxDepth)
-	depth := m.rand.Intn(m.maxDepth) + 1
-
-	// Random selection (with possible repetition)
-	selectedCodes := make([]string, depth)
-	for i := 0; i < depth; i++ {
-		selectedCodes[i] = codes[m.rand.Intn(len(codes))]
+	var depth int
+	// Constrain depth based on available codec count:
+	// - When only 1 codec registered, depth must be 1 (no chain meaning)
+	// - When multiple codecs, depth is random (1 to min(codecCount, maxDepth))
+	availableCount := len(codes)
+	if availableCount == 1 {
+		// Single codec: force depth=1
+		depth = 1
+	} else {
+		// Multiple codecs: random depth (capped by codec count and maxDepth)
+		maxPossibleDepth := availableCount
+		if maxPossibleDepth > m.maxDepth {
+			maxPossibleDepth = m.maxDepth
+		}
+		depth = m.rand.Intn(maxPossibleDepth) + 1
 	}
+
+	// Random selection without repetition
+	// Shuffle available codes and pick first 'depth' elements
+	shuffled := make([]string, len(codes))
+	copy(shuffled, codes)
+	m.rand.Shuffle(len(shuffled), func(i, j int) {
+		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+	})
+	selectedCodes := shuffled[:depth]
 
 	// Create chain
 	chain := NewChain()
