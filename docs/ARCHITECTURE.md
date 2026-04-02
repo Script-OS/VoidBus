@@ -586,8 +586,7 @@ VoidBus/
 │   ├── tcp/                  # TCP Channel
 │   ├── udp/                  # UDP Channel
 │   ├── dns/                  # DNS Channel（低MTU示例）
-│   ├── ws/                   # WebSocket Channel
-│   └── quic/                 # QUIC Channel
+│   └── ws/                   # WebSocket Channel
 │
 ├── fragment/                 # 切片模块
 │   ├── manager.go            # FragmentManager（自适应切片+重组）

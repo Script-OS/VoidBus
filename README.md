@@ -9,7 +9,7 @@ VoidBus 是一个高度模块化、可组合的隐蔽通信总线库，实现信
 - **可插拔架构**：所有模块通过接口定义，支持自定义实现
 - **双向全双工通信**：Server侧可同时向多个客户端接收和发送信息
 - **分片多信道传输**：支持数据分片，通过不同信道/编码组合发送
-- **隐蔽信道设计**：支持WebSocket（默认）、TCP、QUIC、UDP等多种信道
+- **隐蔽信道设计**：支持WebSocket（默认）、TCP、UDP等多种信道
 - **Bitmap协商协议**：二进制格式协商可用信道和Codec（非明文）
 - **信道健康度评估**：基于健康度加权随机选择信道，故障自动切换
 - **可靠/不可靠信道区分**：可靠信道信任协议，不可靠信道实现ACK/NAK重传
@@ -55,8 +55,7 @@ VoidBus/
 │   ├── pool.go         # ChannelPool（健康度加权随机选择）
 │   ├── tcp/            # TCP传输（可靠）
 │   ├── ws/             # WebSocket传输（可靠，默认协商信道）
-│   ├── udp/            # UDP传输（不可靠，ACK/NAK重传）
-│   └── quic/           # QUIC传输（可靠，待实现）
+│   └── udp/            # UDP传输（不可靠，ACK/NAK重传）
 │
 ├── fragment/           # 分片模块
 │   ├── manager.go      # FragmentManager
@@ -117,7 +116,7 @@ Client通过默认信道（WebSocket）发送NegotiateRequest
   → FragmentManager.AdaptiveSplit() → 分片数据（自适应MTU）
   → ChannelPool.SelectChannel() → 健康度加权随机选择
   → Channel.Send() → 网络传输
-    ├─ 可靠信道（TCP/QUIC/WS）: 信任协议可靠性
+    ├─ 可靠信道（TCP/WS）: 信任协议可靠性
     └─ 不可靠信道（UDP）: ACK/NAK重传机制
 ```
 
@@ -170,7 +169,6 @@ VoidBus v2.1 使用二进制Bitmap格式协商（非明文）：
 |---------|------------|------|
 | WebSocket | ✅ | 默认协商信道，易穿透防火墙 |
 | TCP | ✅ | 可靠传输 |
-| QUIC | ✅ | 可靠传输，0-RTT连接 |
 | UDP | ❌ | 需ACK/NAK重传（3s超时） |
 | ICMP | ❌ | 需可靠重传 |
 | DNS | ❌ | 需可靠重传 |

@@ -6,25 +6,24 @@ Automated test suite for VoidBus that verifies multi-channel and multi-codec fun
 
 This test suite covers:
 
-- **Channels**: TCP, WebSocket, UDP, QUIC
+- **Channels**: TCP, WebSocket, UDP (QUIC removed in v3.0 for simplification)
 - **Codecs**: base64, xor, aes-256-gcm, chacha20-poly1305, rsa-oaep-sha256 (plain excluded per security policy)
 - **Codec Chains**: depth 1 (single), depth 2 (chained), depth 3 (max depth)
 - **Test Flow**: Server setup -> Client dial -> Auto negotiation -> 3 bidirectional message rounds -> Cleanup
 
 ## Test Matrix
 
-Total: **48 tests** (20 + 16 + 12)
+Total: **36 tests** (15 + 12 + 9)
 
 ### Phase 1: Single Codec Tests (depth=1)
 
-**4 channels × 5 codecs = 20 tests**
+**3 channels × 5 codecs = 15 tests**
 
 | Channel | Codecs Tested |
 |---------|---------------|
 | TCP     | base64, xor, aes, chacha20, rsa |
 | WebSocket | base64, xor, aes, chacha20, rsa |
 | UDP     | base64, xor, aes, chacha20, rsa |
-| QUIC    | base64, xor, aes, chacha20, rsa |
 
 **Key Requirements:**
 - base64: No key required
@@ -33,7 +32,7 @@ Total: **48 tests** (20 + 16 + 12)
 
 ### Phase 2: Dual Codec Chain Tests (depth=2)
 
-**4 channels × 4 chain combinations = 16 tests**
+**3 channels × 4 chain combinations = 12 tests**
 
 | Chain Combination | Key Used |
 |-------------------|----------|
@@ -46,7 +45,7 @@ Total: **48 tests** (20 + 16 + 12)
 
 ### Phase 3: Triple Codec Chain Tests (depth=3)
 
-**4 channels × 3 chain combinations = 12 tests**
+**3 channels × 3 chain combinations = 9 tests**
 
 | Chain Combination | Key Used |
 |-------------------|----------|
@@ -82,11 +81,6 @@ All encryption codecs use fixed 32-byte test keys created with `make([]byte, 32)
 - RSA key pair generated once and shared across all RSA tests (lazy initialization)
 - RSA tests use small messages (< 50 bytes) to fit within RSA encryption limit (~190 bytes)
 - RSA excluded from codec chains to avoid message size issues
-
-### QUIC Channel Handling
-- Server uses self-signed certificate generated internally
-- Client uses InsecureSkipVerify TLS config (testing only)
-- NextProtos set to ["voidbus"]
 
 ### UDP Channel Handling
 - UDP channel has built-in ACK/NAK mechanism for reliability
@@ -131,7 +125,7 @@ go build -o voidbus-test
 ## Output Example
 
 ```
-Generated 48 tests: 20 (phase1) + 16 (phase2) + 12 (phase3)
+Generated 36 tests: 15 (phase1) + 12 (phase2) + 9 (phase3)
 
 [PASS] P1-T01-tcp-base64
 [PASS] P1-T02-tcp-xor
@@ -149,8 +143,8 @@ Generated 48 tests: 20 (phase1) + 16 (phase2) + 12 (phase3)
 ========================================
 VoidBus Non-Interactive Test Report
 ========================================
-Total Tests: 48
-Passed: 48
+Total Tests: 36
+Passed: 36
 Failed: 0
 ========================================
 ```
@@ -163,5 +157,19 @@ Failed: 0
 
 Example:
 - `P1-T01-tcp-base64` - Phase 1, Test 01, TCP channel, base64 codec
-- `P2-T16-quic-chain2-aes-chacha20` - Phase 2, Test 16, QUIC channel, aes→chacha20 chain
-- `P3-T12-quic-chain3-base64-aes-chacha20` - Phase 3, Test 12, QUIC channel, triple chain
+- `P2-T12-ws-chain2-aes-chacha20` - Phase 2, Test 12, WebSocket channel, aes→chacha20 chain
+- `P3-T09-udp-chain3-base64-aes-chacha20` - Phase 3, Test 09, UDP channel, triple chain
+
+## v3.0 Changes
+
+### QUIC Channel Removal
+- QUIC channel was removed in v3.0 for architecture simplification
+- Test count reduced from 48 to 36 (12 QUIC tests removed)
+- Channel bitmap uses compact mapping: UDP moved from Bit 3 to Bit 2
+- All QUIC-related code and dependencies removed
+
+### Compatibility Warning
+This is a **breaking change**:
+- Old bitmap `0b00000111` (v2.0): WS + TCP + QUIC
+- New bitmap `0b00000111` (v3.0): WS + TCP + UDP
+- Negotiation will mismatch channel types between versions

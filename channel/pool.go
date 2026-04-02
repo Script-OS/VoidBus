@@ -134,7 +134,7 @@ type ChannelPoolStats struct {
 // GenerateChannelBitmap generates a bitmap from registered channels.
 // This is called automatically during negotiation to indicate supported channels.
 // Bitmap format follows negotiate.ChannelBit constants:
-// Bit 0=WS, 1=TCP, 2=QUIC, 3=UDP, 4=ICMP, 5=DNS, 6=HTTP
+// Bit 0=WS, 1=TCP, 2=UDP, 3=ICMP, 4=DNS, 5=HTTP, 6=Reserved, 7=Reserved (compact mapping)
 func (p *ChannelPool) GenerateChannelBitmap() []byte {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -163,23 +163,21 @@ func (p *ChannelPool) GenerateChannelBitmap() []byte {
 }
 
 // channelTypeToBitPosition maps ChannelType to bitmap bit position.
-// Follows negotiate.ChannelBit constants.
+// Follows negotiate.ChannelBit constants (compact mapping, v3.0+).
 func channelTypeToBitPosition(chType ChannelType) int {
 	switch chType {
 	case TypeWS:
 		return 0
 	case TypeTCP:
 		return 1
-	case TypeQUIC:
-		return 2
 	case TypeUDP:
-		return 3
+		return 2
 	case TypeICMP:
-		return 4
+		return 3
 	case TypeDNS:
-		return 5
+		return 4
 	case TypeHTTP:
-		return 6
+		return 5
 	default:
 		return -1 // Unknown type
 	}
@@ -587,6 +585,7 @@ func (p *ChannelPool) SetNegotiatedChannelBitmap(bitmap []byte) {
 }
 
 // bitPositionToChannelType converts bit position to ChannelType.
+// Follows negotiate.ChannelBit constants (compact mapping, v3.0+).
 func bitPositionToChannelType(bitPos int) ChannelType {
 	switch bitPos {
 	case 0:
@@ -594,14 +593,12 @@ func bitPositionToChannelType(bitPos int) ChannelType {
 	case 1:
 		return TypeTCP
 	case 2:
-		return TypeQUIC
-	case 3:
 		return TypeUDP
-	case 4:
+	case 3:
 		return TypeICMP
-	case 5:
+	case 4:
 		return TypeDNS
-	case 6:
+	case 5:
 		return TypeHTTP
 	default:
 		return ""

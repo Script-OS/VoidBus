@@ -240,7 +240,8 @@ const (
     TypeTCP  ChannelType = "tcp"
     TypeUDP  ChannelType = "udp"
     TypeICMP ChannelType = "icmp"
-    TypeQUIC ChannelType = "quic"
+    TypeWS   ChannelType = "ws"
+    // TypeQUIC removed in v3.0 - simplification
 )
 
 // Channel 信道核心接口
@@ -890,7 +891,8 @@ package negotiate
 // NegotiateRequest 客户端协商请求
 type NegotiateRequest struct {
     // ChannelBitmap 信道类型位图
-    // Bit 0=WS, 1=TCP, 2=QUIC, 3=UDP, 4=ICMP, 5=DNS, 6=HTTP
+    // Bit 0=WS, 1=TCP, 2=UDP, 3=ICMP, 4=DNS, 5=HTTP, 6=Reserved, 7=Reserved
+    // (QUIC removed in v3.0 - compact mapping)
     ChannelBitmap []byte
     
     // CodecBitmap Codec类型位图

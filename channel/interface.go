@@ -23,7 +23,7 @@ const (
 	TypeTCP  ChannelType = "tcp"
 	TypeUDP  ChannelType = "udp"
 	TypeICMP ChannelType = "icmp"
-	TypeQUIC ChannelType = "quic"
+	// TypeQUIC removed in v3.0 - simplification
 	TypeWS   ChannelType = "ws"   // WebSocket (default negotiation channel)
 	TypeHTTP ChannelType = "http" // HTTP/HTTPS tunnel
 	TypeDNS  ChannelType = "dns"  // DNS tunnel
@@ -81,7 +81,7 @@ type Channel interface {
 	DefaultMTU() int
 
 	// IsReliable returns whether the channel provides reliable transmission.
-	// Reliable channels (TCP, QUIC, WebSocket) rely on their own protocols for reliability.
+	// Reliable channels (TCP, WebSocket) rely on their own protocols for reliability.
 	// Unreliable channels (UDP) require VoidBus-level ACK/NAK mechanism.
 	IsReliable() bool
 
@@ -114,7 +114,7 @@ type ChannelConfig struct {
 	KeepAlive       bool
 	KeepAlivePeriod time.Duration
 	ReuseAddr       bool
-	TLSConfig       *tls.Config // TLS configuration (required for QUIC, optional for others)
+	TLSConfig       *tls.Config // TLS configuration (optional)
 }
 
 // ChannelModule is the interface for channel module registration.

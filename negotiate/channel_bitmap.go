@@ -7,23 +7,24 @@ package negotiate
 // ChannelBit represents a bit position in Channel Bitmap.
 // Each bit corresponds to a specific channel type.
 //
-// Bitmap format:
-// - Byte 0: Basic channels (WS, TCP, QUIC, UDP, ICMP, DNS, Reserved1, Reserved2)
+// Bitmap format (compact mapping, v3.0+):
+// - Byte 0: Basic channels (WS, TCP, UDP, ICMP, DNS, HTTP, Reserved1, Reserved2)
 //
-// Example: Support WS + TCP + QUIC
+// Example: Support WS + TCP + UDP
 // Bitmap = 0b00000111 = []byte{0x07}
 type ChannelBit int
 
 const (
-	// Basic Channels (Byte 0)
-	ChannelBitWS       ChannelBit = 0 // WebSocket (default negotiation channel)
-	ChannelBitTCP      ChannelBit = 1 // TCP
-	ChannelBitQUIC     ChannelBit = 2 // QUIC
-	ChannelBitUDP      ChannelBit = 3 // UDP (unreliable, needs ACK/NAK)
-	ChannelBitICMP     ChannelBit = 4 // ICMP tunnel
-	ChannelBitDNS      ChannelBit = 5 // DNS tunnel
-	ChannelBitHTTP     ChannelBit = 6 // HTTP/HTTPS tunnel
-	ChannelBitReserved ChannelBit = 7 // Reserved
+	// Basic Channels (Byte 0) - Compact mapping (v3.0+)
+	// QUIC removed to simplify architecture
+	ChannelBitWS        ChannelBit = 0 // WebSocket (default negotiation channel)
+	ChannelBitTCP       ChannelBit = 1 // TCP
+	ChannelBitUDP       ChannelBit = 2 // UDP (unreliable, needs ACK/NAK)
+	ChannelBitICMP      ChannelBit = 3 // ICMP tunnel
+	ChannelBitDNS       ChannelBit = 4 // DNS tunnel
+	ChannelBitHTTP      ChannelBit = 5 // HTTP/HTTPS tunnel
+	ChannelBitReserved  ChannelBit = 6 // Reserved
+	ChannelBitReserved7 ChannelBit = 7 // Reserved
 
 	// Reserved Channels (Byte 1)
 	ChannelBitReserved8  ChannelBit = 8
@@ -40,14 +41,14 @@ const (
 type ChannelID int
 
 const (
-	ChannelIDWS       ChannelID = 0
-	ChannelIDTCP      ChannelID = 1
-	ChannelIDQUIC     ChannelID = 2
-	ChannelIDUDP      ChannelID = 3
-	ChannelIDICMP     ChannelID = 4
-	ChannelIDDNS      ChannelID = 5
-	ChannelIDHTTP     ChannelID = 6
-	ChannelIDReserved ChannelID = 7
+	ChannelIDWS        ChannelID = 0
+	ChannelIDTCP       ChannelID = 1
+	ChannelIDUDP       ChannelID = 2
+	ChannelIDICMP      ChannelID = 3
+	ChannelIDDNS       ChannelID = 4
+	ChannelIDHTTP      ChannelID = 5
+	ChannelIDReserved  ChannelID = 6
+	ChannelIDReserved7 ChannelID = 7
 )
 
 // ChannelBitToID converts ChannelBit to ChannelID.
@@ -156,11 +157,11 @@ func ChannelCount(b ChannelBitmap) int {
 	return count
 }
 
-// IsReliable checks if a channel is reliable (TCP, QUIC, WS).
-// Unreliable channels (UDP) need ACK/NAK mechanism at VoidBus level.
+// IsReliable checks if a channel is reliable (TCP, WS, HTTP).
+// Unreliable channels (UDP, ICMP, DNS) need ACK/NAK mechanism at VoidBus level.
 func (b ChannelBitmap) IsReliable(bit ChannelBit) bool {
 	switch bit {
-	case ChannelBitTCP, ChannelBitQUIC, ChannelBitWS, ChannelBitHTTP:
+	case ChannelBitTCP, ChannelBitWS, ChannelBitHTTP:
 		return true
 	case ChannelBitUDP, ChannelBitICMP, ChannelBitDNS:
 		return false

@@ -274,10 +274,10 @@ func TestChannelBitmap_GetChannelIDs(t *testing.T) {
 	bitmap := NewChannelBitmap(2)
 	bitmap.SetChannel(ChannelBitWS)
 	bitmap.SetChannel(ChannelBitTCP)
-	bitmap.SetChannel(ChannelBitQUIC)
+	bitmap.SetChannel(ChannelBitUDP)
 
 	ids := bitmap.GetChannelIDs()
-	expected := []ChannelID{ChannelIDWS, ChannelIDTCP, ChannelIDQUIC}
+	expected := []ChannelID{ChannelIDWS, ChannelIDTCP, ChannelIDUDP}
 
 	if len(ids) != len(expected) {
 		t.Errorf("expected %d IDs, got %d", len(expected), len(ids))
@@ -298,7 +298,7 @@ func TestChannelBitmap_GetChannelIDs(t *testing.T) {
 }
 
 func TestChannelBitmapFromIDs(t *testing.T) {
-	ids := []ChannelID{ChannelIDWS, ChannelIDTCP, ChannelIDQUIC}
+	ids := []ChannelID{ChannelIDWS, ChannelIDTCP, ChannelIDUDP}
 	bitmap := ChannelBitmapFromIDs(ids, 2)
 
 	if !bitmap.HasChannel(ChannelBitWS) {
@@ -307,8 +307,8 @@ func TestChannelBitmapFromIDs(t *testing.T) {
 	if !bitmap.HasChannel(ChannelBitTCP) {
 		t.Error("expected TCP to be set")
 	}
-	if !bitmap.HasChannel(ChannelBitQUIC) {
-		t.Error("expected QUIC to be set")
+	if !bitmap.HasChannel(ChannelBitUDP) {
+		t.Error("expected UDP to be set")
 	}
 }
 
@@ -316,12 +316,12 @@ func TestIntersectChannelBitmaps(t *testing.T) {
 	a := NewChannelBitmap(2)
 	a.SetChannel(ChannelBitWS)
 	a.SetChannel(ChannelBitTCP)
-	a.SetChannel(ChannelBitQUIC)
+	a.SetChannel(ChannelBitUDP)
 
 	b := NewChannelBitmap(2)
 	b.SetChannel(ChannelBitWS)
+	b.SetChannel(ChannelBitICMP) // Use ICMP instead of QUIC (UDP already in a)
 	b.SetChannel(ChannelBitUDP)
-	b.SetChannel(ChannelBitQUIC)
 
 	result := IntersectChannelBitmaps(a, b)
 
@@ -331,11 +331,11 @@ func TestIntersectChannelBitmaps(t *testing.T) {
 	if result.HasChannel(ChannelBitTCP) {
 		t.Error("expected TCP NOT in intersection")
 	}
-	if result.HasChannel(ChannelBitUDP) {
-		t.Error("expected UDP NOT in intersection")
+	if !result.HasChannel(ChannelBitUDP) {
+		t.Error("expected UDP in intersection")
 	}
-	if !result.HasChannel(ChannelBitQUIC) {
-		t.Error("expected QUIC in intersection")
+	if result.HasChannel(ChannelBitICMP) {
+		t.Error("expected ICMP NOT in intersection")
 	}
 }
 
@@ -356,7 +356,7 @@ func TestChannelCount(t *testing.T) {
 	bitmap := NewChannelBitmap(2)
 	bitmap.SetChannel(ChannelBitWS)
 	bitmap.SetChannel(ChannelBitTCP)
-	bitmap.SetChannel(ChannelBitQUIC)
+	bitmap.SetChannel(ChannelBitUDP)
 
 	count := ChannelCount(bitmap)
 	if count != 3 {
@@ -374,8 +374,9 @@ func TestChannelBitmap_IsReliable(t *testing.T) {
 	if !bitmap.IsReliable(ChannelBitTCP) {
 		t.Error("expected TCP to be reliable")
 	}
-	if !bitmap.IsReliable(ChannelBitQUIC) {
-		t.Error("expected QUIC to be reliable")
+	// UDP is unreliable
+	if bitmap.IsReliable(ChannelBitUDP) {
+		t.Error("expected UDP to be unreliable")
 	}
 
 	// Unreliable channels
@@ -395,10 +396,9 @@ func TestChannelBitmap_GetReliableChannels(t *testing.T) {
 	bitmap.SetChannel(ChannelBitWS)
 	bitmap.SetChannel(ChannelBitTCP)
 	bitmap.SetChannel(ChannelBitUDP) // unreliable
-	bitmap.SetChannel(ChannelBitQUIC)
 
 	reliable := bitmap.GetReliableChannels()
-	expected := []ChannelID{ChannelIDWS, ChannelIDTCP, ChannelIDQUIC}
+	expected := []ChannelID{ChannelIDWS, ChannelIDTCP} // UDP is unreliable
 
 	if len(reliable) != len(expected) {
 		t.Errorf("expected %d reliable channels, got %d", len(expected), len(reliable))
@@ -456,8 +456,8 @@ func TestChannelBitmap_Clone(t *testing.T) {
 		t.Error("expected clone to be equal to original")
 	}
 
-	cloned.SetChannel(ChannelBitQUIC)
-	if bitmap.HasChannel(ChannelBitQUIC) {
+	cloned.SetChannel(ChannelBitUDP)
+	if bitmap.HasChannel(ChannelBitUDP) {
 		t.Error("expected original to not be affected by clone modification")
 	}
 }
@@ -499,7 +499,7 @@ func TestNegotiateRequest_EncodeDecode(t *testing.T) {
 	chBitmap := NewChannelBitmap(2)
 	chBitmap.SetChannel(ChannelBitWS)
 	chBitmap.SetChannel(ChannelBitTCP)
-	chBitmap.SetChannel(ChannelBitQUIC)
+	chBitmap.SetChannel(ChannelBitUDP)
 
 	codecBitmap := NewCodecBitmap(2)
 	codecBitmap.SetCodec(CodecBitPlain)
@@ -958,11 +958,11 @@ func TestNewServerNegotiator(t *testing.T) {
 }
 
 func TestServerNegotiator_HandleRequest(t *testing.T) {
-	// Server supports WS + TCP + QUIC
+	// Server supports WS + TCP + ICMP (UDP already used in client)
 	serverChBitmap := NewChannelBitmap(2)
 	serverChBitmap.SetChannel(ChannelBitWS)
 	serverChBitmap.SetChannel(ChannelBitTCP)
-	serverChBitmap.SetChannel(ChannelBitQUIC)
+	serverChBitmap.SetChannel(ChannelBitICMP) // Use ICMP instead of QUIC
 
 	serverCodecBitmap := NewCodecBitmap(2)
 	serverCodecBitmap.SetCodec(CodecBitPlain)
@@ -1001,11 +1001,11 @@ func TestServerNegotiator_HandleRequest(t *testing.T) {
 	if !resp.ChannelBitmap.HasChannel(ChannelBitTCP) {
 		t.Error("expected TCP in intersection")
 	}
-	if resp.ChannelBitmap.HasChannel(ChannelBitUDP) {
-		t.Error("expected UDP NOT in intersection")
+	if resp.ChannelBitmap.HasChannel(ChannelBitICMP) {
+		t.Error("expected ICMP NOT in intersection (client doesn't support)")
 	}
-	if resp.ChannelBitmap.HasChannel(ChannelBitQUIC) {
-		t.Error("expected QUIC NOT in intersection (client doesn't support)")
+	if resp.ChannelBitmap.HasChannel(ChannelBitUDP) {
+		t.Error("expected UDP NOT in intersection (server doesn't support)")
 	}
 
 	if resp.Status != NegotiateStatusSuccess {
@@ -1018,9 +1018,9 @@ func TestServerNegotiator_HandleRequest(t *testing.T) {
 }
 
 func TestServerNegotiator_HandleRequest_NoCommonChannels(t *testing.T) {
-	// Server supports only QUIC
+	// Server supports only UDP
 	serverChBitmap := NewChannelBitmap(2)
-	serverChBitmap.SetChannel(ChannelBitQUIC)
+	serverChBitmap.SetChannel(ChannelBitUDP)
 
 	serverCodecBitmap := NewCodecBitmap(2)
 	serverCodecBitmap.SetCodec(CodecBitPlain)
@@ -1032,7 +1032,7 @@ func TestServerNegotiator_HandleRequest_NoCommonChannels(t *testing.T) {
 
 	server := NewServerNegotiator(serverConfig)
 
-	// Client supports only WS + TCP (no QUIC)
+	// Client supports only WS + TCP (no UDP)
 	clientChBitmap := NewChannelBitmap(2)
 	clientChBitmap.SetChannel(ChannelBitWS)
 	clientChBitmap.SetChannel(ChannelBitTCP)

@@ -76,7 +76,7 @@ const (
     ChannelTypeUDP   ChannelType = "udp"
     ChannelTypeICMP  ChannelType = "icmp"
     ChannelTypeWS    ChannelType = "websocket"
-    ChannelTypeQUIC  ChannelType = "quic"
+    // ChannelTypeQUIC removed in v3.0 - simplification
 )
 ```
 
@@ -128,10 +128,9 @@ acceptedChannel.Type()  // "tcp"
 
 ## 待实现模块
 
-- `channel/udp/` - UDP传输
 - `channel/icmp/` - ICMP传输
-- `channel/ws/` - WebSocket传输
-- `channel/quic/` - QUIC传输
+- `channel/dns/` - DNS传输
+- `channel/ws/` - WebSocket传输（已实现，需完善文档）
 
 ## ChannelRegistry
 
