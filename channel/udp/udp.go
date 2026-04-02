@@ -259,62 +259,65 @@ func (c *ClientChannel) Send(data []byte) error {
 }
 
 // Receive implements channel.Channel.Receive.
+// Loops internally to skip ACK/NAK frames and return only data frames.
 func (c *ClientChannel) Receive() ([]byte, error) {
-	c.mu.RLock()
-	if c.closed {
-		c.mu.RUnlock()
-		return nil, channel.ErrChannelClosed
-	}
-	if !c.connected {
-		c.mu.RUnlock()
-		return nil, channel.ErrChannelDisconnected
-	}
-	conn := c.conn
-	c.mu.RUnlock()
-
-	buf := make([]byte, MaxUDPPacketSize)
-	n, err := conn.Read(buf)
-	if err != nil {
-		c.handleDisconnect()
-		return nil, &channel.ChannelError{
-			Op:        "receive",
-			Err:       err,
-			Msg:       "failed to receive",
-			Retryable: false,
+	for {
+		c.mu.RLock()
+		if c.closed {
+			c.mu.RUnlock()
+			return nil, channel.ErrChannelClosed
 		}
-	}
+		if !c.connected {
+			c.mu.RUnlock()
+			return nil, channel.ErrChannelDisconnected
+		}
+		conn := c.conn
+		c.mu.RUnlock()
 
-	if n < HeaderSize {
-		return nil, errors.New("udp: invalid frame size")
-	}
+		buf := make([]byte, MaxUDPPacketSize)
+		n, err := conn.Read(buf)
+		if err != nil {
+			c.handleDisconnect()
+			return nil, &channel.ChannelError{
+				Op:        "receive",
+				Err:       err,
+				Msg:       "failed to receive",
+				Retryable: false,
+			}
+		}
 
-	frameType := FrameType(buf[0])
-	seq := binary.BigEndian.Uint32(buf[1:5])
-	data := buf[5:n]
+		if n < HeaderSize {
+			return nil, errors.New("udp: invalid frame size")
+		}
 
-	// Handle frame type
-	switch frameType {
-	case FrameAck:
-		// ACK received, remove from pending
-		c.reliability.AckPending(seq)
-		return nil, nil // No data to return
+		frameType := FrameType(buf[0])
+		seq := binary.BigEndian.Uint32(buf[1:5])
+		data := buf[5:n]
 
-	case FrameNak:
-		// NAK received, should retry (handled by retry goroutine)
-		c.reliability.MarkRetried(seq)
-		return nil, nil
+		// Handle frame type
+		switch frameType {
+		case FrameAck:
+			// ACK received, remove from pending, continue loop
+			c.reliability.AckPending(seq)
+			continue // Skip ACK, wait for next packet
 
-	case FrameData:
-		// Data received, send ACK
-		c.sendAck(seq)
-		return data, nil
+		case FrameNak:
+			// NAK received, should retry (handled by retry goroutine), continue loop
+			c.reliability.MarkRetried(seq)
+			continue // Skip NAK, wait for next packet
 
-	case FrameProbe:
-		// Heartbeat, ignore
-		return nil, nil
+		case FrameData:
+			// Data received, send ACK and return data
+			c.sendAck(seq)
+			return data, nil
 
-	default:
-		return nil, errors.New("udp: unknown frame type")
+		case FrameProbe:
+			// Heartbeat, ignore and continue
+			continue
+
+		default:
+			return nil, errors.New("udp: unknown frame type")
+		}
 	}
 }
 
@@ -597,6 +600,7 @@ func (a *AcceptedChannel) Send(data []byte) error {
 }
 
 // Receive implements channel.Channel.Receive.
+// Loops internally to skip ACK/NAK frames and return only data frames.
 func (a *AcceptedChannel) Receive() ([]byte, error) {
 	// Return first data if available
 	if a.firstData != nil {
@@ -605,44 +609,48 @@ func (a *AcceptedChannel) Receive() ([]byte, error) {
 		return data, nil
 	}
 
-	a.mu.RLock()
-	if a.closed {
+	for {
+		a.mu.RLock()
+		if a.closed {
+			a.mu.RUnlock()
+			return nil, channel.ErrChannelClosed
+		}
 		a.mu.RUnlock()
-		return nil, channel.ErrChannelClosed
-	}
-	a.mu.RUnlock()
 
-	buf := make([]byte, MaxUDPPacketSize)
-	n, addr, err := a.serverConn.ReadFromUDP(buf)
-	if err != nil {
-		return nil, err
-	}
+		buf := make([]byte, MaxUDPPacketSize)
+		n, addr, err := a.serverConn.ReadFromUDP(buf)
+		if err != nil {
+			return nil, err
+		}
 
-	// Check if from correct client
-	if !addr.IP.Equal(a.remoteAddr.IP) || addr.Port != a.remoteAddr.Port {
-		return nil, errors.New("udp: packet from wrong client")
-	}
+		// Check if from correct client
+		if !addr.IP.Equal(a.remoteAddr.IP) || addr.Port != a.remoteAddr.Port {
+			return nil, errors.New("udp: packet from wrong client")
+		}
 
-	if n < HeaderSize {
-		return nil, errors.New("udp: invalid frame size")
-	}
+		if n < HeaderSize {
+			return nil, errors.New("udp: invalid frame size")
+		}
 
-	frameType := FrameType(buf[0])
-	seq := binary.BigEndian.Uint32(buf[1:5])
-	data := buf[5:n]
+		frameType := FrameType(buf[0])
+		seq := binary.BigEndian.Uint32(buf[1:5])
+		data := buf[5:n]
 
-	switch frameType {
-	case FrameAck:
-		a.reliability.AckPending(seq)
-		return nil, nil
-	case FrameNak:
-		a.reliability.MarkRetried(seq)
-		return nil, nil
-	case FrameData:
-		a.sendAck(seq)
-		return data, nil
-	default:
-		return nil, nil
+		switch frameType {
+		case FrameAck:
+			a.reliability.AckPending(seq)
+			continue // Skip ACK, wait for next packet
+		case FrameNak:
+			a.reliability.MarkRetried(seq)
+			continue // Skip NAK, wait for next packet
+		case FrameData:
+			a.sendAck(seq)
+			return data, nil
+		case FrameProbe:
+			continue // Skip heartbeat
+		default:
+			continue // Skip unknown frames
+		}
 	}
 }
 

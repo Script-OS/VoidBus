@@ -706,18 +706,39 @@ func main() {
 
 	log.Printf("Generated %d tests: 20 (phase1) + 16 (phase2) + 12 (phase3)", len(tests))
 
-	// Run tests (stop on first failure)
+	// Run all tests (continue on failure to collect all issues)
+	var failedTests []string
 	for _, tc := range tests {
 		result := tr.RunTest(tc)
 		if !result.Success {
-			log.Printf("\n[CRITICAL] Test failed: %s", tc.Name)
-			log.Printf("Error: %v", result.Error)
-			log.Printf("\nStopping test execution due to failure.")
-			log.Printf("Please review the error and provide fix proposal.")
-			tr.PrintReport()
-			os.Exit(1)
+			failedTests = append(failedTests, tc.Name)
 		}
 	}
 
 	tr.PrintReport()
+
+	// Summary of failed tests
+	if len(failedTests) > 0 {
+		log.Printf("\n========================================")
+		log.Printf("Failed Tests Summary (%d/%d):", len(failedTests), len(tests))
+		log.Printf("========================================")
+		for _, name := range failedTests {
+			for _, r := range tr.results {
+				if r.TestName == name {
+					log.Printf("\n[FAIL] %s", name)
+					log.Printf("  Error: %v", r.Error)
+					log.Printf("  Duration: %v", r.Duration)
+					break
+				}
+			}
+		}
+		log.Printf("\n========================================")
+		log.Printf("Please review the errors above for fix proposals.")
+		log.Printf("========================================")
+		os.Exit(1)
+	} else {
+		log.Printf("\n========================================")
+		log.Printf("All %d tests passed!", len(tests))
+		log.Printf("========================================")
+	}
 }
