@@ -15,6 +15,7 @@ package ws
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -222,6 +223,11 @@ type ServerChannel struct {
 	closed      bool
 	clients     map[string]*AcceptedChannel
 	clientCount int
+	// HTTP server for Accept() support
+	httpServer  *http.Server
+	acceptChan  chan *AcceptedChannel
+	acceptError chan error
+	listener    net.Listener
 }
 
 // NewServerChannel creates a new WebSocket server channel.
@@ -238,11 +244,52 @@ func NewServerChannel(config channel.ChannelConfig) (*ServerChannel, error) {
 		},
 	}
 
-	return &ServerChannel{
-		upgrader: upgrader,
-		config:   config,
-		clients:  make(map[string]*AcceptedChannel),
-	}, nil
+	s := &ServerChannel{
+		upgrader:    upgrader,
+		config:      config,
+		clients:     make(map[string]*AcceptedChannel),
+		acceptChan:  make(chan *AcceptedChannel, 10),
+		acceptError: make(chan error, 1),
+	}
+
+	// Create HTTP handler
+	handler := http.NewServeMux()
+	handler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		client, err := s.Upgrade(w, r)
+		if err != nil {
+			s.acceptError <- err
+			return
+		}
+		s.acceptChan <- client.(*AcceptedChannel)
+	})
+
+	// Start HTTP server
+	s.httpServer = &http.Server{
+		Addr:    config.Address,
+		Handler: handler,
+	}
+
+	// Start listener
+	listener, err := net.Listen("tcp", config.Address)
+	if err != nil {
+		return nil, &channel.ChannelError{
+			Op:        "listen",
+			Err:       err,
+			Msg:       "failed to listen on " + config.Address,
+			Retryable: false,
+		}
+	}
+	s.listener = listener
+
+	// Start HTTP server in goroutine
+	go func() {
+		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+			// Server error (not graceful shutdown)
+			s.acceptError <- err
+		}
+	}()
+
+	return s, nil
 }
 
 // Accept implements channel.ServerChannel.Accept.
@@ -254,7 +301,24 @@ func (s *ServerChannel) Accept() (channel.Channel, error) {
 	}
 	s.mu.RUnlock()
 
-	return nil, errors.New("ws: accept requires HTTP handler integration, use Upgrade method")
+	// Wait for connection from acceptChan or error from acceptError.
+	// When ServerChannel is closed, both channels are closed, which causes
+	// reads to return zero values (nil client / nil error). We must detect
+	// this via the 'ok' flag and return ErrChannelClosed.
+	select {
+	case client, ok := <-s.acceptChan:
+		if !ok {
+			// acceptChan was closed — server is shutting down
+			return nil, channel.ErrChannelClosed
+		}
+		return client, nil
+	case err, ok := <-s.acceptError:
+		if !ok {
+			// acceptError was closed — server is shutting down
+			return nil, channel.ErrChannelClosed
+		}
+		return nil, err
+	}
 }
 
 // Send implements channel.Channel.Send.
@@ -277,10 +341,27 @@ func (s *ServerChannel) Close() error {
 	}
 
 	s.closed = true
+
+	// Close HTTP server
+	if s.httpServer != nil {
+		s.httpServer.Close()
+	}
+
+	// Close listener
+	if s.listener != nil {
+		s.listener.Close()
+	}
+
+	// Close all clients
 	for _, client := range s.clients {
 		client.Close()
 	}
 	s.clients = make(map[string]*AcceptedChannel)
+
+	// Close accept channels
+	close(s.acceptChan)
+	close(s.acceptError)
+
 	return nil
 }
 

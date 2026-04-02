@@ -56,22 +56,27 @@ func (l *voidBusListener) Accept() (net.Conn, error) {
 }
 
 // Close stops the listener.
+// It closes the server channel first to unblock the acceptLoop (which may be
+// blocked on serverCh.Accept()), then waits for the loop to exit.
 func (l *voidBusListener) Close() error {
 	l.closeMu.Lock()
-	defer l.closeMu.Unlock()
-
 	if l.closed {
+		l.closeMu.Unlock()
 		return nil
 	}
 	l.closed = true
 
-	// Stop accept loop
-	l.wg.Wait()
-
-	// Close server channel
+	// Close server channel first to unblock Accept() in acceptLoop.
 	if l.serverCh != nil {
 		l.serverCh.Close()
 	}
+
+	// Release closeMu BEFORE waiting — acceptLoop checks l.closed under this lock,
+	// so holding it while waiting would deadlock.
+	l.closeMu.Unlock()
+
+	// Now wait for accept loop to exit (it will see l.closed == true)
+	l.wg.Wait()
 
 	return nil
 }
@@ -92,15 +97,22 @@ func (l *voidBusListener) acceptLoop() {
 
 	for {
 		l.closeMu.Lock()
-		if l.closed {
-			l.closeMu.Unlock()
+		closed := l.closed
+		l.closeMu.Unlock()
+		if closed {
 			return
 		}
-		l.closeMu.Unlock()
 
 		// Accept new client connection
 		clientCh, err := l.serverCh.Accept()
 		if err != nil {
+			// If listener was closed, Accept() returns error — exit cleanly.
+			l.closeMu.Lock()
+			closed = l.closed
+			l.closeMu.Unlock()
+			if closed {
+				return
+			}
 			select {
 			case l.errChan <- err:
 			default:
@@ -109,7 +121,16 @@ func (l *voidBusListener) acceptLoop() {
 			continue
 		}
 
-		// Handle client in background
+		// Handle client in background.
+		// Check closed state before spawning to avoid wg.Add after wg.Wait race.
+		l.closeMu.Lock()
+		if l.closed {
+			l.closeMu.Unlock()
+			clientCh.Close()
+			return
+		}
+		l.wg.Add(1)
+		l.closeMu.Unlock()
 		go l.handleClient(clientCh)
 	}
 }
@@ -117,6 +138,13 @@ func (l *voidBusListener) acceptLoop() {
 // handleClient handles a single client connection.
 // Automatically performs negotiation and creates VoidBusConn.
 func (l *voidBusListener) handleClient(clientCh channel.Channel) {
+	defer l.wg.Done()
+
+	// Defensive check: Accept() may return nil channel on shutdown
+	if clientCh == nil {
+		return
+	}
+
 	// 1. Wait for client negotiation request
 	requestData, err := clientCh.Receive()
 	if err != nil {
@@ -199,11 +227,9 @@ func (l *voidBusListener) handleClient(clientCh channel.Channel) {
 
 	// 10. Add client channel to client bus
 	if err := clientBus.AddChannelWithID(clientCh, channelID); err != nil {
-		println("[DEBUG] AddChannelWithID failed:", err.Error())
 		clientCh.Close()
 		return
 	}
-	println("[DEBUG] Added channel to clientBus, channelID:", channelID)
 
 	// 11. Mark client bus as connected and negotiated
 	clientBus.connected.Store(true)
@@ -216,14 +242,11 @@ func (l *voidBusListener) handleClient(clientCh channel.Channel) {
 	clientBus.running.Store(true)
 	go clientBus.nakBatchLoop()
 	chIDs := clientBus.channelPool.GetChannelIDs()
-	println("[DEBUG] clientBus channel IDs:", len(chIDs))
 	for _, chID := range chIDs {
 		info, err := clientBus.channelPool.GetChannel(chID)
 		if err != nil {
-			println("[DEBUG] GetChannel failed for", chID, ":", err.Error())
 			continue
 		}
-		println("[DEBUG] Starting receiveLoop for channel:", chID)
 		clientBus.wg.Add(1)
 		go clientBus.receiveLoop(info)
 	}

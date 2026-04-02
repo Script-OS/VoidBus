@@ -478,6 +478,8 @@ func (b *Bus) bridgeReceiveToChan(recvChan chan []byte) {
 }
 
 // receiveLoop handles receiving from a channel.
+// It exits when stopChan is closed or when the underlying channel is closed
+// (which causes Receive() to return an error).
 func (b *Bus) receiveLoop(info *channel.ChannelInfo) {
 	defer b.wg.Done()
 
@@ -486,24 +488,32 @@ func (b *Bus) receiveLoop(info *channel.ChannelInfo) {
 		case <-b.stopChan:
 			return
 		default:
-			data, err := info.Channel.Receive()
-			if err != nil {
-				b.channelPool.RecordError(info.ID)
-				time.Sleep(100 * time.Millisecond)
-				continue
-			}
+		}
 
-			// Debug: print received raw data size
+		data, err := info.Channel.Receive()
+		if err != nil {
+			// Check if bus is stopping — if so, exit cleanly.
+			select {
+			case <-b.stopChan:
+				return
+			default:
+			}
+			// Channel error while bus is still running — record and retry.
+			b.channelPool.RecordError(info.ID)
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		// Debug: print received raw data size
+		if b.config.DebugMode {
+			println("[DEBUG] receiveLoop: received", len(data), "bytes from channel", info.ID)
+		}
+
+		b.channelPool.RecordSend(info.ID, time.Millisecond)
+		if err := b.processReceivedPacket(data, info); err != nil {
+			// Log error internally
 			if b.config.DebugMode {
-				println("[DEBUG] receiveLoop: received", len(data), "bytes from channel", info.ID)
-			}
-
-			b.channelPool.RecordSend(info.ID, time.Millisecond)
-			if err := b.processReceivedPacket(data, info); err != nil {
-				// Log error internally
-				if b.config.DebugMode {
-					println("[DEBUG] processReceivedPacket error:", err.Error())
-				}
+				println("[DEBUG] processReceivedPacket error:", err.Error())
 			}
 		}
 	}
@@ -716,6 +726,8 @@ func (b *Bus) sendEND_ACK(sessionID string) error {
 }
 
 // Stop stops the bus and all goroutines.
+// It closes all channels first to unblock any goroutines waiting on Receive(),
+// then waits for all goroutines to exit cleanly.
 func (b *Bus) Stop() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -726,6 +738,11 @@ func (b *Bus) Stop() error {
 
 	b.running.Store(false)
 	close(b.stopChan)
+
+	// Close all channels to unblock receiveLoop goroutines waiting on Receive().
+	// Without this, receiveLoop blocks forever on channel.Receive() and wg.Wait() deadlocks.
+	b.channelPool.CloseAll()
+
 	b.wg.Wait()
 	b.fragmentMgr.Stop()
 	b.sessionMgr.Stop()

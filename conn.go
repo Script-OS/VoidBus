@@ -150,7 +150,8 @@ func (c *voidBusConn) Write(b []byte) (n int, err error) {
 }
 
 // Close closes the connection.
-// Calls bus.Stop() to stop the receive loop.
+// Calls bus.Stop() which closes all channels (unblocking Receive loops)
+// and waits for all goroutines to exit.
 func (c *voidBusConn) Close() error {
 	c.closeMu.Lock()
 	defer c.closeMu.Unlock()
@@ -160,7 +161,7 @@ func (c *voidBusConn) Close() error {
 	}
 	c.closed = true
 
-	// Stop the bus (this will close stopChan and stop receiveLoop)
+	// Stop the bus: closes all channels in pool → unblocks receiveLoop → waits for exit
 	// Note: For client mode, this stops the entire bus
 	// For server mode, each client has its own clientBus
 	c.bus.Stop()
