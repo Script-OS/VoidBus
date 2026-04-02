@@ -332,11 +332,13 @@ func (s *ServerChannel) Receive() ([]byte, error) {
 }
 
 // Close implements channel.Channel.Close.
+// IMPORTANT: This method follows the "copy-release-operate" pattern to avoid deadlock.
+// We copy the client list before releasing the lock, then close clients outside of lock.
 func (s *ServerChannel) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.closed {
+		s.mu.Unlock()
 		return channel.ErrChannelClosed
 	}
 
@@ -352,15 +354,24 @@ func (s *ServerChannel) Close() error {
 		s.listener.Close()
 	}
 
-	// Close all clients
+	// Copy clients to close outside of lock to avoid deadlock
+	// client.Close() may call removeClient which tries to acquire s.mu
+	clients := make([]*AcceptedChannel, 0, len(s.clients))
 	for _, client := range s.clients {
-		client.Close()
+		clients = append(clients, client)
 	}
 	s.clients = make(map[string]*AcceptedChannel)
 
 	// Close accept channels
 	close(s.acceptChan)
 	close(s.acceptError)
+
+	s.mu.Unlock() // Release lock BEFORE closing clients
+
+	// Close all client connections outside of lock
+	for _, client := range clients {
+		client.Close()
+	}
 
 	return nil
 }
@@ -524,24 +535,35 @@ func (a *AcceptedChannel) Receive() ([]byte, error) {
 }
 
 // Close implements channel.Channel.Close.
+// IMPORTANT: This method follows the "copy-release-operate" pattern to avoid deadlock.
+// Lock order must be consistent: server.mu → client.mu (acquired by removeClient).
+// If we hold client.mu and call server.removeClient(), we reverse this order → deadlock.
 func (a *AcceptedChannel) Close() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	if a.closed {
+		a.mu.Unlock()
 		return channel.ErrChannelClosed
 	}
 
 	a.closed = true
 	a.connected = false
 
-	if a.server != nil {
-		a.server.removeClient(a.id)
+	// Copy references before releasing lock to avoid deadlock
+	server := a.server
+	id := a.id
+	conn := a.conn
+
+	a.mu.Unlock() // Release lock BEFORE calling server.removeClient()
+
+	// Now operate outside of lock - safe from deadlock
+	if server != nil {
+		server.removeClient(id) // This acquires server.mu, no client.mu held
 	}
 
-	if a.conn != nil {
-		a.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		return a.conn.Close()
+	if conn != nil {
+		conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		return conn.Close()
 	}
 	return nil
 }

@@ -393,17 +393,37 @@ func (c *ClientChannel) handleDisconnect() {
 	c.mu.Unlock()
 }
 
+// udpPacket represents a received UDP packet with sender address.
+type udpPacket struct {
+	data       []byte
+	remoteAddr *net.UDPAddr
+}
+
 // ServerChannel implements channel.ServerChannel for UDP server.
+// Uses a single dispatcher goroutine to read from the shared UDP socket
+// and route packets to per-client queues, eliminating socket contention.
 type ServerChannel struct {
-	conn        *net.UDPConn
-	config      channel.ChannelConfig
-	mu          sync.RWMutex
-	closed      bool
-	clients     map[string]*AcceptedChannel
-	reliability *ReliabilityManager
+	conn   *net.UDPConn
+	config channel.ChannelConfig
+	mu     sync.RWMutex
+	closed bool
+
+	// Client management
+	clients map[string]*AcceptedChannel // id -> client
+
+	// Dispatcher: routes packets from shared socket to per-client queues
+	clientsByAddr map[string]*AcceptedChannel // "ip:port" -> client
+	addrMu        sync.RWMutex                // protects clientsByAddr
+	newClientCh   chan *udpPacket             // first packet from unknown client → Accept()
+	dispatchOnce  sync.Once                   // ensures dispatcher starts only once
 }
 
 // NewServerChannel creates a new UDP server channel.
+//
+// The server uses a dispatcher pattern:
+// - Single goroutine reads from the shared UDP socket
+// - Packets are routed to per-client queues by remote address
+// - New (unknown) clients are forwarded to Accept() via newClientCh
 func NewServerChannel(config channel.ChannelConfig) (*ServerChannel, error) {
 	if config.Address == "" {
 		return nil, errors.New("udp: address required")
@@ -430,15 +450,84 @@ func NewServerChannel(config channel.ChannelConfig) (*ServerChannel, error) {
 	}
 
 	return &ServerChannel{
-		conn:        conn,
-		config:      config,
-		clients:     make(map[string]*AcceptedChannel),
-		reliability: NewReliabilityManager(DefaultAckTimeout, MaxRetries),
+		conn:          conn,
+		config:        config,
+		clients:       make(map[string]*AcceptedChannel),
+		clientsByAddr: make(map[string]*AcceptedChannel),
+		newClientCh:   make(chan *udpPacket, 16),
 	}, nil
 }
 
+// startDispatcher starts the single packet dispatcher goroutine.
+// It reads all packets from the shared UDP socket and routes them:
+// - Known client address → client's recvQueue channel
+// - Unknown address → newClientCh for Accept() to pick up
+func (s *ServerChannel) startDispatcher() {
+	go func() {
+		buf := make([]byte, MaxUDPPacketSize)
+		for {
+			n, remoteAddr, err := s.conn.ReadFromUDP(buf)
+			if err != nil {
+				s.mu.RLock()
+				closed := s.closed
+				s.mu.RUnlock()
+				if closed {
+					return // Server closed, stop dispatcher
+				}
+				continue // Transient error, keep reading
+			}
+
+			if n == 0 {
+				continue
+			}
+
+			// Make a copy of the packet data (buf is reused)
+			pktData := make([]byte, n)
+			copy(pktData, buf[:n])
+
+			pkt := &udpPacket{
+				data:       pktData,
+				remoteAddr: remoteAddr,
+			}
+
+			// Look up client by address
+			addrKey := remoteAddr.String()
+			s.addrMu.RLock()
+			client, exists := s.clientsByAddr[addrKey]
+			s.addrMu.RUnlock()
+
+			if exists {
+				// Known client: route to its queue (non-blocking)
+				// Check if client is still open to avoid send-on-closed-channel panic
+				client.mu.RLock()
+				closed := client.closed
+				client.mu.RUnlock()
+				if !closed {
+					select {
+					case client.recvQueue <- pkt:
+					default:
+						// Queue full, drop packet (UDP semantics allow this)
+					}
+				}
+			} else {
+				// Unknown client: forward to Accept()
+				select {
+				case s.newClientCh <- pkt:
+				default:
+					// Accept backpressure, drop packet
+				}
+			}
+		}
+	}()
+}
+
 // Accept implements channel.ServerChannel.Accept.
+// Blocks until a packet arrives from a new (unknown) client address.
+// Uses the dispatcher to receive first packets from new clients.
 func (s *ServerChannel) Accept() (channel.Channel, error) {
+	// Start dispatcher on first Accept() call
+	s.dispatchOnce.Do(s.startDispatcher)
+
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
@@ -446,40 +535,47 @@ func (s *ServerChannel) Accept() (channel.Channel, error) {
 	}
 	s.mu.RUnlock()
 
-	// Read first packet to get client address
-	buf := make([]byte, MaxUDPPacketSize)
-	n, remoteAddr, err := s.conn.ReadFromUDP(buf)
-	if err != nil {
-		return nil, &channel.ChannelError{
-			Op:        "accept",
-			Err:       err,
-			Msg:       "failed to accept",
-			Retryable: true,
-		}
+	// Wait for a packet from a new client
+	pkt, ok := <-s.newClientCh
+	if !ok {
+		return nil, channel.ErrChannelClosed
 	}
 
-	// Create accepted channel for this client
+	ackTimeout := DefaultAckTimeout
+	if s.config.Timeout > 0 {
+		ackTimeout = s.config.Timeout
+	}
+
+	// Create accepted channel with its own ReliabilityManager and receive queue
 	client := &AcceptedChannel{
-		serverConn:   s.conn,
-		remoteAddr:   remoteAddr,
+		sendConn:     s.conn,
+		remoteAddr:   pkt.remoteAddr,
 		id:           internal.GenerateID(),
 		lastActivity: time.Now(),
 		connected:    true,
-		reliability:  s.reliability,
+		reliability:  NewReliabilityManager(ackTimeout, MaxRetries),
+		recvQueue:    make(chan *udpPacket, 256),
 	}
+
+	// Register client by address for dispatcher routing
+	addrKey := pkt.remoteAddr.String()
+	s.addrMu.Lock()
+	s.clientsByAddr[addrKey] = client
+	s.addrMu.Unlock()
 
 	s.mu.Lock()
 	s.clients[client.id] = client
 	s.mu.Unlock()
 
-	// Process first packet
-	if n >= HeaderSize {
-		frameType := FrameType(buf[0])
-		seq := binary.BigEndian.Uint32(buf[1:5])
+	// Process first packet: extract data or handle control frame
+	if len(pkt.data) >= HeaderSize {
+		frameType := FrameType(pkt.data[0])
+		seq := binary.BigEndian.Uint32(pkt.data[1:5])
 		if frameType == FrameData {
 			client.sendAck(seq)
-			// Store data for first receive
-			client.firstData = buf[5:n]
+			// Store payload for first Receive() call
+			client.firstData = make([]byte, len(pkt.data)-HeaderSize)
+			copy(client.firstData, pkt.data[5:])
 		}
 	}
 
@@ -506,9 +602,19 @@ func (s *ServerChannel) Close() error {
 	}
 
 	s.closed = true
+
+	// Close newClientCh to unblock Accept()
+	close(s.newClientCh)
+
+	// Close all client channels
 	for _, client := range s.clients {
 		client.Close()
 	}
+
+	// Clear address routing table
+	s.addrMu.Lock()
+	s.clientsByAddr = make(map[string]*AcceptedChannel)
+	s.addrMu.Unlock()
 
 	if s.conn != nil {
 		return s.conn.Close()
@@ -548,17 +654,22 @@ func (s *ServerChannel) ListenAddress() string {
 	return s.config.Address
 }
 
-// AcceptedChannel represents an accepted UDP client.
+// AcceptedChannel represents an accepted UDP client connection.
+// Each AcceptedChannel has:
+// - Its own ReliabilityManager (independent sequence numbers)
+// - A dedicated recvQueue (fed by the server's dispatcher goroutine)
+// - A reference to the shared sendConn (UDP write is thread-safe)
 type AcceptedChannel struct {
-	serverConn   *net.UDPConn
+	sendConn     *net.UDPConn // shared server socket, used only for WriteToUDP (thread-safe)
 	remoteAddr   *net.UDPAddr
 	mu           sync.RWMutex
 	closed       bool
 	connected    bool
 	id           string
 	lastActivity time.Time
-	reliability  *ReliabilityManager
-	firstData    []byte // First packet data
+	reliability  *ReliabilityManager // per-client, NOT shared
+	recvQueue    chan *udpPacket     // fed by dispatcher goroutine
+	firstData    []byte              // first packet data (from Accept)
 }
 
 // Send implements channel.Channel.Send.
@@ -585,7 +696,7 @@ func (a *AcceptedChannel) Send(data []byte) error {
 
 	a.reliability.AddPending(seq, frame)
 
-	if _, err := a.serverConn.WriteToUDP(frame, a.remoteAddr); err != nil {
+	if _, err := a.sendConn.WriteToUDP(frame, a.remoteAddr); err != nil {
 		a.reliability.RemovePending(seq)
 		return &channel.ChannelError{
 			Op:        "send",
@@ -600,9 +711,10 @@ func (a *AcceptedChannel) Send(data []byte) error {
 }
 
 // Receive implements channel.Channel.Receive.
-// Loops internally to skip ACK/NAK frames and return only data frames.
+// Reads from the per-client recvQueue (populated by dispatcher).
+// Loops internally to skip ACK/NAK/Probe frames and return only data frames.
 func (a *AcceptedChannel) Receive() ([]byte, error) {
-	// Return first data if available
+	// Return first data if available (from Accept handshake)
 	if a.firstData != nil {
 		data := a.firstData
 		a.firstData = nil
@@ -617,24 +729,19 @@ func (a *AcceptedChannel) Receive() ([]byte, error) {
 		}
 		a.mu.RUnlock()
 
-		buf := make([]byte, MaxUDPPacketSize)
-		n, addr, err := a.serverConn.ReadFromUDP(buf)
-		if err != nil {
-			return nil, err
+		// Read from per-client queue (blocks until packet available or channel closed)
+		pkt, ok := <-a.recvQueue
+		if !ok {
+			return nil, channel.ErrChannelClosed
 		}
 
-		// Check if from correct client
-		if !addr.IP.Equal(a.remoteAddr.IP) || addr.Port != a.remoteAddr.Port {
-			return nil, errors.New("udp: packet from wrong client")
+		if len(pkt.data) < HeaderSize {
+			continue // Invalid frame, skip
 		}
 
-		if n < HeaderSize {
-			return nil, errors.New("udp: invalid frame size")
-		}
-
-		frameType := FrameType(buf[0])
-		seq := binary.BigEndian.Uint32(buf[1:5])
-		data := buf[5:n]
+		frameType := FrameType(pkt.data[0])
+		seq := binary.BigEndian.Uint32(pkt.data[1:5])
+		data := pkt.data[5:]
 
 		switch frameType {
 		case FrameAck:
@@ -645,7 +752,10 @@ func (a *AcceptedChannel) Receive() ([]byte, error) {
 			continue // Skip NAK, wait for next packet
 		case FrameData:
 			a.sendAck(seq)
-			return data, nil
+			// Make a copy since pkt.data may be from dispatcher buffer
+			result := make([]byte, len(data))
+			copy(result, data)
+			return result, nil
 		case FrameProbe:
 			continue // Skip heartbeat
 		default:
@@ -659,7 +769,7 @@ func (a *AcceptedChannel) sendAck(seq uint32) error {
 	frame := make([]byte, HeaderSize)
 	frame[0] = byte(FrameAck)
 	binary.BigEndian.PutUint32(frame[1:5], seq)
-	_, err := a.serverConn.WriteToUDP(frame, a.remoteAddr)
+	_, err := a.sendConn.WriteToUDP(frame, a.remoteAddr)
 	return err
 }
 
@@ -668,8 +778,15 @@ func (a *AcceptedChannel) Close() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if a.closed {
+		return nil // Idempotent close
+	}
+
 	a.closed = true
 	a.connected = false
+
+	// Close recvQueue to unblock Receive()
+	close(a.recvQueue)
 	return nil
 }
 

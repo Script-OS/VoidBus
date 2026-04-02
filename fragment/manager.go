@@ -276,28 +276,45 @@ func (m *FragmentManager) CompleteRecvSession(sessionID string) bool {
 // === Cleanup ===
 
 // CleanupExpired removes expired buffers.
+// IMPORTANT: Uses two-phase cleanup to minimize lock contention:
+// 1. RLock: Quickly identify expired IDs (fast read)
+// 2. Lock: Batch delete (brief write)
 func (m *FragmentManager) CleanupExpired() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	now := time.Now()
-	cleaned := 0
 
-	// Clean expired send buffers
+	// Phase 1: Identify expired IDs under read lock (fast)
+	m.mu.RLock()
+	expiredSendIDs := make([]string, 0)
 	for id, buf := range m.sendBuffers {
 		if buf.IsExpired() || now.Sub(buf.SentTime) > m.config.FragmentTimeout*2 {
+			expiredSendIDs = append(expiredSendIDs, id)
+		}
+	}
+
+	expiredRecvIDs := make([]string, 0)
+	for id, buf := range m.recvBuffers {
+		if buf.IsExpired() || now.Sub(buf.GetLastActivity()) > m.config.FragmentTimeout {
+			expiredRecvIDs = append(expiredRecvIDs, id)
+		}
+	}
+	m.mu.RUnlock()
+
+	// Phase 2: Delete under write lock (brief)
+	m.mu.Lock()
+	cleaned := 0
+	for _, id := range expiredSendIDs {
+		if _, exists := m.sendBuffers[id]; exists {
 			delete(m.sendBuffers, id)
 			cleaned++
 		}
 	}
-
-	// Clean expired receive buffers
-	for id, buf := range m.recvBuffers {
-		if buf.IsExpired() || now.Sub(buf.GetLastActivity()) > m.config.FragmentTimeout {
+	for _, id := range expiredRecvIDs {
+		if _, exists := m.recvBuffers[id]; exists {
 			delete(m.recvBuffers, id)
 			cleaned++
 		}
 	}
+	m.mu.Unlock()
 
 	return cleaned
 }

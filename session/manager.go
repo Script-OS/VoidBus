@@ -224,27 +224,45 @@ func (m *SessionManager) Exists(sessionID string) bool {
 // === Cleanup ===
 
 // CleanupExpired removes expired sessions.
+// IMPORTANT: Uses two-phase cleanup to minimize lock contention:
+// 1. RLock: Quickly identify expired IDs (fast read)
+// 2. Lock: Batch delete (brief write)
+// Note: session.IsExpired() and session.IsTimeout() acquire session.mu, but this
+// is safe because we always acquire locks in order: manager.mu → session.mu
 func (m *SessionManager) CleanupExpired() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	cleaned := 0
-
-	// Clean expired send sessions
+	// Phase 1: Identify expired IDs under read lock (fast)
+	m.mu.RLock()
+	expiredSendIDs := make([]string, 0)
 	for id, session := range m.sendSessions {
 		if session.IsExpired() || session.IsTimeout() {
+			expiredSendIDs = append(expiredSendIDs, id)
+		}
+	}
+
+	expiredRecvIDs := make([]string, 0)
+	for id, session := range m.recvSessions {
+		if session.IsExpired() || session.IsTimeout() {
+			expiredRecvIDs = append(expiredRecvIDs, id)
+		}
+	}
+	m.mu.RUnlock()
+
+	// Phase 2: Delete under write lock (brief)
+	m.mu.Lock()
+	cleaned := 0
+	for _, id := range expiredSendIDs {
+		if _, exists := m.sendSessions[id]; exists {
 			delete(m.sendSessions, id)
 			cleaned++
 		}
 	}
-
-	// Clean expired receive sessions
-	for id, session := range m.recvSessions {
-		if session.IsExpired() || session.IsTimeout() {
+	for _, id := range expiredRecvIDs {
+		if _, exists := m.recvSessions[id]; exists {
 			delete(m.recvSessions, id)
 			cleaned++
 		}
 	}
+	m.mu.Unlock()
 
 	return cleaned
 }

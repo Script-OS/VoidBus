@@ -12,7 +12,7 @@
 // Design Constraints:
 // - QUIC channel MUST NOT handle serialization/encoding/fragmentation
 // - QUIC channel MUST NOT be exposed in metadata protocols
-// - QUIC Stream provides message framing (no length-prefix needed)
+// - QUIC Stream is a byte stream (like TCP), requires length-prefix for message framing
 // - QUIC is reliable, VoidBus-level ACK is not needed
 package quic
 
@@ -23,8 +23,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"sync"
@@ -43,6 +45,8 @@ const (
 	DefaultBufferSize = 4096
 	// MaxMessageSize is the maximum message size (16MB)
 	MaxMessageSize = 16 * 1024 * 1024
+	// LengthPrefixSize is the size of length prefix (4 bytes, same as TCP)
+	LengthPrefixSize = 4
 	// DefaultMTU is QUIC's initial MTU (packet size)
 	DefaultMTU = 1200
 	// DefaultConnectTimeout is the default connection timeout
@@ -146,14 +150,18 @@ func NewClientChannel(config channel.ChannelConfig) (*ClientChannel, error) {
 }
 
 // Send implements channel.Channel.Send.
-// Sends data directly to QUIC stream (no framing needed).
+// Sends data with length-prefix framing over QUIC stream.
+// QUIC stream is a byte stream (like TCP), so length-prefix is required
+// for message boundary detection.
+//
+// Frame format: [4 bytes: length (little-endian uint32)] [N bytes: data]
 //
 // Parameter Constraints:
 //   - data: MUST be non-nil byte slice
 //   - data length MUST be <= MaxMessageSize (16MB)
 //
 // Return Guarantees:
-//   - On success: complete data sent to peer
+//   - On success: complete data frame sent to peer
 func (c *ClientChannel) Send(data []byte) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -169,15 +177,30 @@ func (c *ClientChannel) Send(data []byte) error {
 		return errors.New("quic: data exceeds max message size")
 	}
 
-	// Write data directly (QUIC stream handles framing)
-	_, err := c.stream.Write(data)
-	if err != nil {
+	// Write length prefix
+	lengthBuf := make([]byte, LengthPrefixSize)
+	binary.LittleEndian.PutUint32(lengthBuf, uint32(len(data)))
+
+	if _, err := c.stream.Write(lengthBuf); err != nil {
 		c.handleDisconnect()
 		return &channel.ChannelError{
 			Op:        "send",
 			Err:       err,
-			Msg:       "failed to write data",
+			Msg:       "failed to write length prefix",
 			Retryable: false,
+		}
+	}
+
+	// Write data
+	if len(data) > 0 {
+		if _, err := c.stream.Write(data); err != nil {
+			c.handleDisconnect()
+			return &channel.ChannelError{
+				Op:        "send",
+				Err:       err,
+				Msg:       "failed to write data",
+				Retryable: false,
+			}
 		}
 	}
 
@@ -186,10 +209,12 @@ func (c *ClientChannel) Send(data []byte) error {
 }
 
 // Receive implements channel.Channel.Receive.
-// Receives data from QUIC stream.
+// Receives data with length-prefix framing from QUIC stream.
+//
+// Frame format: [4 bytes: length (little-endian uint32)] [N bytes: data]
 //
 // Return Guarantees:
-//   - On success: returns complete data
+//   - On success: returns exactly one complete message
 //
 // Important: This method does NOT hold the read lock during blocking I/O
 // to avoid deadlock with Close(). Close() needs the write lock to proceed.
@@ -207,28 +232,30 @@ func (c *ClientChannel) Receive() ([]byte, error) {
 	stream := c.stream
 	c.mu.RUnlock()
 
-	// Read data (QUIC stream read until EOF or error)
-	buffer := make([]byte, DefaultBufferSize)
-	data := make([]byte, 0, DefaultBufferSize)
-
-	for {
-		n, err := stream.Read(buffer)
-		if n > 0 {
-			data = append(data, buffer[:n]...)
+	// Read length prefix (blocking)
+	lengthBuf := make([]byte, LengthPrefixSize)
+	if _, err := io.ReadFull(stream, lengthBuf); err != nil {
+		c.handleDisconnect()
+		if errors.Is(err, io.EOF) {
+			return nil, channel.ErrChannelDisconnected
 		}
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				if len(data) > 0 {
-					// Return partial data
-					c.mu.RLock()
-					c.lastActivity = time.Now()
-					c.mu.RUnlock()
-					return data, nil
-				}
-				c.handleDisconnect()
-				return nil, channel.ErrChannelDisconnected
-			}
-			// Stream closed or error
+		return nil, &channel.ChannelError{
+			Op:        "receive",
+			Err:       err,
+			Msg:       "failed to read length prefix",
+			Retryable: false,
+		}
+	}
+
+	length := binary.LittleEndian.Uint32(lengthBuf)
+	if length > MaxMessageSize {
+		return nil, errors.New("quic: received message exceeds max size")
+	}
+
+	// Read data (blocking)
+	data := make([]byte, length)
+	if length > 0 {
+		if _, err := io.ReadFull(stream, data); err != nil {
 			c.handleDisconnect()
 			return nil, &channel.ChannelError{
 				Op:        "receive",
@@ -237,11 +264,14 @@ func (c *ClientChannel) Receive() ([]byte, error) {
 				Retryable: false,
 			}
 		}
-		if len(data) > MaxMessageSize {
-			return nil, errors.New("quic: message exceeds max size")
-		}
-		// Continue reading until stream EOF or error
 	}
+
+	// Update last activity
+	c.mu.RLock()
+	c.lastActivity = time.Now()
+	c.mu.RUnlock()
+
+	return data, nil
 }
 
 // Close implements channel.Channel.Close.
@@ -444,21 +474,32 @@ func (s *ServerChannel) Receive() ([]byte, error) {
 }
 
 // Close implements channel.Channel.Close.
+// IMPORTANT: This method follows the "copy-release-operate" pattern to avoid deadlock.
+// We copy the client list before releasing the lock, then close clients outside of lock.
 func (s *ServerChannel) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.closed {
+		s.mu.Unlock()
 		return channel.ErrChannelClosed
 	}
 
 	s.closed = true
 
-	// Close all clients
+	// Copy clients to close outside of lock to avoid deadlock
+	// client.Close() may call removeClient which tries to acquire s.mu
+	clients := make([]*AcceptedChannel, 0, len(s.clients))
 	for _, client := range s.clients {
-		client.Close()
+		clients = append(clients, client)
 	}
 	s.clients = make(map[string]*AcceptedChannel)
+
+	s.mu.Unlock() // Release lock BEFORE closing clients
+
+	// Close all client connections outside of lock
+	for _, client := range clients {
+		client.Close()
+	}
 
 	if s.listener != nil {
 		return s.listener.Close()
@@ -519,6 +560,9 @@ type AcceptedChannel struct {
 }
 
 // Send implements channel.Channel.Send.
+// Sends data with length-prefix framing over QUIC stream.
+//
+// Frame format: [4 bytes: length (little-endian uint32)] [N bytes: data]
 func (a *AcceptedChannel) Send(data []byte) error {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -534,14 +578,30 @@ func (a *AcceptedChannel) Send(data []byte) error {
 		return errors.New("quic: data exceeds max message size")
 	}
 
-	_, err := a.stream.Write(data)
-	if err != nil {
+	// Write length prefix
+	lengthBuf := make([]byte, LengthPrefixSize)
+	binary.LittleEndian.PutUint32(lengthBuf, uint32(len(data)))
+
+	if _, err := a.stream.Write(lengthBuf); err != nil {
 		a.handleDisconnect()
 		return &channel.ChannelError{
 			Op:        "send",
 			Err:       err,
-			Msg:       "failed to write data",
+			Msg:       "failed to write length prefix",
 			Retryable: false,
+		}
+	}
+
+	// Write data
+	if len(data) > 0 {
+		if _, err := a.stream.Write(data); err != nil {
+			a.handleDisconnect()
+			return &channel.ChannelError{
+				Op:        "send",
+				Err:       err,
+				Msg:       "failed to write data",
+				Retryable: false,
+			}
 		}
 	}
 
@@ -550,6 +610,9 @@ func (a *AcceptedChannel) Send(data []byte) error {
 }
 
 // Receive implements channel.Channel.Receive.
+// Receives data with length-prefix framing from QUIC stream.
+//
+// Frame format: [4 bytes: length (little-endian uint32)] [N bytes: data]
 func (a *AcceptedChannel) Receive() ([]byte, error) {
 	a.mu.RLock()
 	if a.closed {
@@ -563,15 +626,30 @@ func (a *AcceptedChannel) Receive() ([]byte, error) {
 	stream := a.stream
 	a.mu.RUnlock()
 
-	buffer := make([]byte, DefaultBufferSize)
-	data := make([]byte, 0, DefaultBufferSize)
-
-	for {
-		n, err := stream.Read(buffer)
-		if n > 0 {
-			data = append(data, buffer[:n]...)
+	// Read length prefix (blocking)
+	lengthBuf := make([]byte, LengthPrefixSize)
+	if _, err := io.ReadFull(stream, lengthBuf); err != nil {
+		a.handleDisconnect()
+		if errors.Is(err, io.EOF) {
+			return nil, channel.ErrChannelDisconnected
 		}
-		if err != nil {
+		return nil, &channel.ChannelError{
+			Op:        "receive",
+			Err:       err,
+			Msg:       "failed to read length prefix",
+			Retryable: false,
+		}
+	}
+
+	length := binary.LittleEndian.Uint32(lengthBuf)
+	if length > MaxMessageSize {
+		return nil, errors.New("quic: received message exceeds max size")
+	}
+
+	// Read data (blocking)
+	data := make([]byte, length)
+	if length > 0 {
+		if _, err := io.ReadFull(stream, data); err != nil {
 			a.handleDisconnect()
 			return nil, &channel.ChannelError{
 				Op:        "receive",
@@ -580,33 +658,49 @@ func (a *AcceptedChannel) Receive() ([]byte, error) {
 				Retryable: false,
 			}
 		}
-		if len(data) > MaxMessageSize {
-			return nil, errors.New("quic: message exceeds max size")
-		}
 	}
+
+	// Update last activity
+	a.mu.RLock()
+	a.lastActivity = time.Now()
+	a.mu.RUnlock()
+
+	return data, nil
 }
 
 // Close implements channel.Channel.Close.
+// IMPORTANT: This method follows the "copy-release-operate" pattern to avoid deadlock.
+// Lock order must be consistent: server.mu → client.mu (acquired by removeClient).
+// If we hold client.mu and call server.removeClient(), we reverse this order → deadlock.
 func (a *AcceptedChannel) Close() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	if a.closed {
+		a.mu.Unlock()
 		return channel.ErrChannelClosed
 	}
 
 	a.closed = true
 	a.connected = false
 
-	if a.server != nil {
-		a.server.removeClient(a.id)
+	// Copy references before releasing lock to avoid deadlock
+	server := a.server
+	id := a.id
+	stream := a.stream
+	conn := a.conn
+
+	a.mu.Unlock() // Release lock BEFORE calling server.removeClient()
+
+	// Now operate outside of lock - safe from deadlock
+	if server != nil {
+		server.removeClient(id) // This acquires server.mu, no client.mu held
 	}
 
-	if a.stream != nil {
-		a.stream.Close()
+	if stream != nil {
+		stream.Close()
 	}
-	if a.conn != nil {
-		a.conn.CloseWithError(0, "normal closure")
+	if conn != nil {
+		conn.CloseWithError(0, "normal closure")
 	}
 	return nil
 }

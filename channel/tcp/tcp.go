@@ -579,23 +579,34 @@ func (a *AcceptedChannel) Receive() ([]byte, error) {
 }
 
 // Close implements channel.Channel.Close.
+// IMPORTANT: This method follows the "copy-release-operate" pattern to avoid deadlock.
+// Lock order must be consistent: server.mu → client.mu (acquired by removeClient).
+// If we hold client.mu and call server.removeClient(), we reverse this order → deadlock.
 func (a *AcceptedChannel) Close() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	if a.closed {
+		a.mu.Unlock()
 		return channel.ErrChannelClosed
 	}
 
 	a.closed = true
 	a.connected = false
 
-	if a.server != nil {
-		a.server.removeClient(a.id)
+	// Copy references before releasing lock to avoid deadlock
+	server := a.server
+	id := a.id
+	conn := a.conn
+
+	a.mu.Unlock() // Release lock BEFORE calling server.removeClient()
+
+	// Now operate outside of lock - safe from deadlock
+	if server != nil {
+		server.removeClient(id) // This acquires server.mu, no client.mu held
 	}
 
-	if a.conn != nil {
-		return a.conn.Close()
+	if conn != nil {
+		return conn.Close()
 	}
 	return nil
 }
