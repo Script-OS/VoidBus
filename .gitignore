@@ -1,0 +1,33 @@
+# Compiled binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build output
+/test-runner
+
+# Example binaries (compiled from main.go)
+example/*/client/client
+example/*/server/server
+example/*/client/voidbus-client
+example/*/server/voidbus-server
+example/*/client/debug-client
+example/*/server/debug-server
+
+# Test output
+*.log
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
