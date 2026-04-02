@@ -54,7 +54,7 @@ func main() {
 
 	// === Step 1: Create Bus ===
 	fmt.Println("[1/3] Creating VoidBus...")
-	bus, err := voidbus.New()
+	bus, err := voidbus.New(nil)
 	if err != nil {
 		log.Fatalf("Failed to create bus: %v", err)
 	}

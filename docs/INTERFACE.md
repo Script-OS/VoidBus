@@ -11,115 +11,14 @@
 ### 1.2 接口分类
 | 分类 | 说明 | 示例 |
 |------|------|------|
-| **核心接口** | 系统运行必需的接口 | Channel, Codec, Serializer |
-| **扩展接口** | 增强功能的可选接口 | KeyAwareCodec, ServerChannel |
-| **管理接口** | 生命周期管理接口 | Bus, ServerBus, MultiBus |
-| **辅助接口** | 内部使用的接口 | SessionRegistry, FragmentManager |
+| **核心接口** | 系统运行必需的接口 | Channel, Codec |
+| **扩展接口** | 增强功能的可选接口 | KeyAwareCodec |
+| **管理接口** | 生命周期管理接口 | Bus, Module |
+| **辅助接口** | 内部使用的接口 | SessionManager, FragmentManager |
 
 ---
 
-## 2. Serializer（序列化器）接口规范
-
-### 2.1 核心接口
-
-```go
-package serializer
-
-// Serializer 序列化器核心接口
-// 负责数据结构的序列化与反序列化
-// 可暴露在元数据协议中，用于双方协商
-type Serializer interface {
-    // Serialize 将数据序列化为字节流
-    //
-    // 参数约束:
-    //   - data: 必须为非nil的byte切片，长度>=0
-    //
-    // 返回值保证:
-    //   - 成功时返回序列化后的字节流，长度>=0
-    //   - 失败时返回nil和明确的错误
-    //
-    // 错误类型:
-    //   - ErrInvalidData: 输入数据无效
-    //   - ErrSerializationFailed: 序列化过程失败
-    Serialize(data []byte) ([]byte, error)
-    
-    // Deserialize 将字节流反序列化为原始数据
-    //
-    // 参数约束:
-    //   - data: 必须为有效的序列化格式字节流
-    //
-    // 返回值保证:
-    //   - 成功时返回原始数据
-    //   - 失败时返回nil和明确的错误
-    //
-    // 错误类型:
-    //   - ErrInvalidData: 输入数据格式无效
-    //   - ErrDeserializationFailed: 反序列化过程失败
-    Deserialize(data []byte) ([]byte, error)
-    
-    // Name 返回序列化器名称
-    //
-    // 返回值保证:
-    //   - 返回唯一的、可暴露的名称标识
-    //   - 名称格式: 小写字母+数字+下划线，如 "json", "protobuf_v2"
-    Name() string
-    
-    // Priority 返回优先级
-    //
-    // 返回值保证:
-    //   - 返回0-100的优先级值
-    //   - 值越高优先级越高
-    //   - 用于协商时的排序选择
-    Priority() int
-}
-```
-
-### 2.2 Serializer注册接口
-
-```go
-// SerializerModule 序列化器模块接口（用于注册）
-type SerializerModule interface {
-    // Create 创建序列化器实例
-    //
-    // 参数约束:
-    //   - args: 可选配置参数，类型由具体实现定义
-    //
-    // 返回值保证:
-    //   - 成功时返回Serializer实例
-    //   - 失败时返回nil和错误
-    Create(args interface{}) (Serializer, error)
-    
-    // Name 返回模块名称（与Create返回的Serializer.Name()一致）
-    Name() string
-}
-
-// SerializerRegistry 序列化器注册表
-type SerializerRegistry interface {
-    // Register 注册序列化器模块
-    Register(module SerializerModule) error
-    
-    // Get 获取序列化器实例
-    Get(name string) (Serializer, error)
-    
-    // List 列出所有已注册的序列化器名称
-    List() []string
-    
-    // GetByPriority 按优先级获取可用序列化器列表（降序）
-    GetByPriority() []Serializer
-}
-```
-
-### 2.3 预定义Serializer类型
-
-| 名称 | 优先级 | 说明 | 实现位置 |
-|------|--------|------|----------|
-| `plain` | 0 | 无序列化，直接传递原始字节 | `serializer/plain/` |
-| `json` | 50 | JSON序列化 | `serializer/json/` |
-| `protobuf` | 80 | Protocol Buffers序列化 | `serializer/protobuf/` |
-
----
-
-## 3. Codec（编码/加密）接口规范
+## 2. Codec（编码/加密）接口规范
 
 ### 3.1 核心接口
 
@@ -235,7 +134,7 @@ type KeyAwareCodec interface {
 }
 ```
 
-### 3.3 CodecChain接口
+### 2.2 CodecChain接口
 
 ```go
 // CodecChain Codec链式组合接口
@@ -327,7 +226,7 @@ type CodecChain interface {
 
 ---
 
-## 4. Channel（信道）接口规范
+## 3. Channel（信道）接口规范
 
 ### 4.1 核心接口
 
@@ -485,7 +384,7 @@ type KeepAliveConfig struct {
 
 ---
 
-## 5. KeyProvider（密钥提供者）接口规范
+## 4. KeyProvider（密钥提供者）接口规范
 
 ### 5.1 核心接口
 
@@ -603,7 +502,7 @@ type EmbeddedKeyProviderConfig struct {
 
 ---
 
-## 6. Fragment（分片）接口规范
+## 5. Fragment（分片）接口规范
 
 ### 6.1 核心接口
 
@@ -739,309 +638,212 @@ type FragmentManager interface {
 
 ---
 
-## 7. Bus接口规范
+## 6. Bus接口规范
 
-### 7.1 核心Bus接口
+### 6.1 核心 API（net.Conn/net.Listener 风格）
+
+VoidBus v3.0 采用 Go 标准库风格的消息式通信接口。
 
 ```go
 package voidbus
 
-// Bus 单信道总线接口
-type Bus interface {
-    // Send 发送数据
-    //
-    // 处理流程:
-    //   data → Serializer.Serialize → CodecChain.Encode → [Fragment.Split] → Channel.Send
-    //
-    // 参数约束:
-    //   - data: 非nil的byte切片
-    //
-    // 返回值保证:
-    //   - 数据已发送到对端
-    Send(data []byte) error
-    
-    // Receive 接收数据（阻塞）
-    //
-    // 处理流程:
-    //   Channel.Receive → [Fragment.Reassemble] → CodecChain.Decode → Serializer.Deserialize → data
-    //
-    // 返回值保证:
-    //   - 返回完整、解码后的数据
-    Receive() ([]byte, error)
-    
-    // SetSerializer 设置序列化器
-    SetSerializer(serializer Serializer) Bus
-    
-    // SetCodecChain 设置Codec链
-    SetCodecChain(chain CodecChain) Bus
-    
-    // SetChannel 设置信道
-    SetChannel(channel Channel) Bus
-    
-    // SetKeyProvider 设置密钥提供者
-    SetKeyProvider(provider KeyProvider) Bus
-    
-    // SetFragment 设置分片器（可选）
-    SetFragment(fragment Fragment) Bus
-    
-    // OnMessage 注册消息处理回调
-    //
-    // 当启用异步接收时，接收到的消息通过回调处理
-    OnMessage(handler func(data []byte)) Bus
-    
-    // OnError 注册错误处理回调
-    OnError(handler func(err error)) Bus
-    
-    // Start 启动总线
-    //
-    // 前置条件:
-    //   - Serializer已设置
-    //   - CodecChain已设置且非空
-    //   - Channel已设置且已连接
-    //   - 如Codec需要密钥，KeyProvider已设置
-    //
-    // 行为特性:
-    //   - 启动后台接收循环（如果设置了OnMessage）
-    Start() error
-    
-    // Stop 停止总线
-    //
-    // 行为特性:
-    //   - 停止后台接收循环
-    //   - 关闭Channel
-    Stop() error
-    
-    // IsRunning 返回运行状态
-    IsRunning() bool
-    
-    // GetSessionID 返回会话ID
-    //
-    // 用于MultiBus中的标识
-    GetSessionID() string
+// Bus 统一总线接口
+// 
+// 提供两种模式:
+//   - Client模式: 使用 Dial() 获取 net.Conn
+//   - Server模式: 使用 Listen() 获取 net.Listener
+type Bus struct {
+    // 内部实现，不暴露接口
 }
+
+// New 创建 Bus 实例
+//
+// 参数:
+//   - config: 配置结构，nil 时使用默认配置
+//
+// 返回值保证:
+//   - 返回可用的 Bus 实例
+func New(config *BusConfig) (*Bus, error)
+
+// RegisterCodec 注册 Codec
+//
+// 参数约束:
+//   - codec: 必须实现 Codec 接口
+//   - codec.Code() 返回用户定义的代号
+//
+// 返回值保证:
+//   - 注册成功后可用于编码
+func (b *Bus) RegisterCodec(codec Codec) error
+
+// AddChannel 添加 Channel
+//
+// 参数约束:
+//   - channel: 必须实现 Channel 接口
+//
+// 返回值保证:
+//   - 添加成功后可用于通信
+func (b *Bus) AddChannel(channel Channel) error
+
+// Dial 客户端连接
+//
+// 处理流程:
+//   1. CreateNegotiateRequest (从注册 codecs 生成 Bitmap)
+//   2. Send NegotiateRequest
+//   3. Receive NegotiateResponse
+//   4. ApplyNegotiateResponse
+//   5. StartReceiveLoop
+//   6. Return net.Conn
+//
+// 参数约束:
+//   - ch: 已通过 AddChannel 添加的客户端 Channel
+//
+// 返回值保证:
+//   - 返回已协商的 net.Conn
+//   - Conn.Read: 每次返回一条完整消息
+//   - Conn.Write: 每次发送一条完整消息
+func (b *Bus) Dial(ch Channel) (net.Conn, error)
+
+// Listen 服务端监听
+//
+// 参数约束:
+//   - ch: 已通过 AddChannel 添加的 ServerChannel
+//
+// 返回值保证:
+//   - 返回 net.Listener
+//   - Listener.Accept: 返回已协商的客户端 net.Conn
+func (b *Bus) Listen(ch Channel) (net.Listener, error)
+
+// SetKey 设置密钥
+//
+// 用于需要密钥的 Codec (AES, ChaCha20 等)
+func (b *Bus) SetKey(key []byte) error
+
+// SetMaxCodecDepth 设置最大 Codec 链深度
+func (b *Bus) SetMaxCodecDepth(depth int) error
+
+// SetDebugMode 设置调试模式
+//
+// 启用后输出详细日志
+func (b *Bus) SetDebugMode(enable bool)
 ```
 
-### 7.2 BusBuilder接口
+### 6.2 VoidBusConn (net.Conn 实现)
 
 ```go
-// BusBuilder Bus构建器（Fluent API）
-type BusBuilder interface {
-    // UseSerializer 使用序列化器
-    UseSerializer(name string) BusBuilder
-    
-    // UseSerializerInstance 使用序列化器实例
-    UseSerializerInstance(serializer Serializer) BusBuilder
-    
-    // UseCodecChain 使用Codec链
-    UseCodecChain(chain CodecChain) BusBuilder
-    
-    // UseCodec 添加单个Codec
-    UseCodec(codec Codec) BusBuilder
-    
-    // UseChannel 使用信道
-    UseChannel(channel Channel) BusBuilder
-    
-    // UseKeyProvider 使用密钥提供者
-    UseKeyProvider(provider KeyProvider) BusBuilder
-    
-    // UseFragment 使用分片器
-    UseFragment(fragment Fragment) BusBuilder
-    
-    // WithConfig 设置配置
-    WithConfig(config BusConfig) BusBuilder
-    
-    // Build 构建Bus实例
-    Build() (Bus, error)
+// VoidBusConn 实现 net.Conn 接口
+// 提供消息式通信:
+//   - Read: 返回一条完整消息（已重组、已解码）
+//   - Write: 发送一条完整消息（自动编码、分片、多 Channel 分发）
+type VoidBusConn struct {
+    // 内部实现
 }
+
+// Read 读取一条完整消息
+//
+// 行为特性:
+//   - 每次调用返回一条完整消息
+//   - 自动处理: 分片重组 → Codec 解码 → 数据验证
+//   - 阻塞直到收到完整消息或超时
+//
+// 参数约束:
+//   - buf: 接收缓冲区，建议 4096+ 字节
+//
+// 返回值保证:
+//   - n: 实际读取的字节数
+//   - data: 完整、解码后的消息数据
+func (c *VoidBusConn) Read(buf []byte) (n int, err error)
+
+// Write 写入一条完整消息
+//
+// 行为特性:
+//   - 每次调用发送一条完整消息
+//   - 自动处理: Codec 编码 → 自适应分片 → 多 Channel 并行分发
+//
+// 参数约束:
+//   - data: 要发送的消息数据
+//
+// 返回值保证:
+//   - 数据已发送到对端（可靠传输）
+func (c *VoidBusConn) Write(data []byte) (n int, err error)
+
+// Close 关闭连接
+func (c *VoidBusConn) Close() error
+
+// LocalAddr 返回本地地址
+func (c *VoidBusConn) LocalAddr() net.Addr
+
+// RemoteAddr 返回对端地址
+func (c *VoidBusConn) RemoteAddr() net.Addr
+
+// SetDeadline 设置读写超时
+//
+// 超时适用于整条消息的重组/编码/发送
+func (c *VoidBusConn) SetDeadline(t time.Time) error
+
+// SetReadDeadline 设置读取超时
+func (c *VoidBusConn) SetReadDeadline(t time.Time) error
+
+// SetWriteDeadline 设置写入超时
+func (c *VoidBusConn) SetWriteDeadline(t time.Time) error
 ```
 
-### 7.3 BusConfig结构
+### 6.3 VoidBusListener (net.Listener 实现)
+
+```go
+// VoidBusListener 实现 net.Listener 接口
+type VoidBusListener struct {
+    // 内部实现
+}
+
+// Accept 接受新客户端连接
+//
+// 行为特性:
+//   - 阻塞等待新连接
+//   - 自动处理协商流程
+//   - 返回已协商的 net.Conn
+//
+// 返回值保证:
+//   - 返回的 net.Conn 已完成协商
+//   - 可直接用于 Read/Write
+func (l *VoidBusListener) Accept() (net.Conn, error)
+
+// Close 关闭监听器
+func (l *VoidBusListener) Close() error
+
+// Addr 返回监听地址
+func (l *VoidBusListener) Addr() net.Addr
+```
+
+---
+
+## 7. BusConfig 结构
 
 ```go
 // BusConfig 总线配置
 type BusConfig struct {
-    // AsyncReceive 是否启用异步接收
-    AsyncReceive bool
+    // MaxCodecDepth 最大Codec链深度 (默认: 2)
+    MaxCodecDepth int
     
-    // EnableFragment 是否启用分片
-    EnableFragment bool
+    // DefaultMTU 默认MTU大小 (默认: 1024)
+    DefaultMTU int
     
-    // MaxFragmentSize 最大分片大小（字节）
-    MaxFragmentSize int
+    // RecvBufferSize 接收缓冲区大小 (默认: 100)
+    RecvBufferSize int
     
-    // SendQueueSize 发送队列大小
-    SendQueueSize int
-    
-    // RecvQueueSize 接收队列大小
-    RecvQueueSize int
-    
-    // FragmentTimeout 分片重组超时（秒）
-    FragmentTimeout int
-    
-    // AutoReconnect 是否自动重连
-    AutoReconnect bool
-    
-    // ReconnectDelay 重连延迟（秒）
-    ReconnectDelay int
-    
-    // MaxReconnectAttempts 最大重连尝试次数（0=无限）
-    MaxReconnectAttempts int
+    // DebugMode 调试模式，输出详细日志
+    DebugMode bool
+}
+
+// DefaultBusConfig 返回默认配置
+func DefaultBusConfig() *BusConfig {
+    return &BusConfig{
+        MaxCodecDepth:  2,
+        DefaultMTU:     1024,
+        RecvBufferSize: 100,
+        DebugMode:      false,
+    }
 }
 ```
-
----
-
-## 8. ServerBus接口规范
-
-### 8.1 ServerBus接口
-
-```go
-// ServerBus 服务端总线接口
-type ServerBus interface {
-    // Listen 开始监听
-    //
-    // 参数约束:
-    //   - address: 监听地址，格式 "host:port"
-    Listen(address string) error
-    
-    // Start 启动服务端
-    //
-    // 前置条件:
-    //   - 已调用Listen
-    //   - NegotiationPolicy已设置
-    Start() error
-    
-    // Stop 停止服务端
-    //
-    // 行为特性:
-    //   - 关闭所有客户端连接
-    //   - 停止监听
-    Stop() error
-    
-    // SetNegotiationPolicy 设置协商策略
-    SetNegotiationPolicy(policy NegotiationPolicy) ServerBus
-    
-    // SetSerializer 设置默认序列化器
-    SetSerializer(serializer Serializer) ServerBus
-    
-    // SetCodecChain 设置默认Codec链
-    SetCodecChain(chain CodecChain) ServerBus
-    
-    // SetKeyProvider 设置密钥提供者
-    SetKeyProvider(provider KeyProvider) ServerBus
-    
-    // OnClientConnect 客户端连接回调
-    //
-    // 参数:
-    //   - clientID: 客户端唯一标识
-    //   - bus: 客户端Bus实例（可用于向客户端发送）
-    OnClientConnect(handler func(clientID string, bus *ClientBus)) ServerBus
-    
-    // OnClientDisconnect 客户端断开回调
-    OnClientDisconnect(handler func(clientID string, reason string)) ServerBus
-    
-    // OnMessage 消息接收回调
-    //
-    // 参数:
-    //   - clientID: 来源客户端ID
-    //   - data: 接收到的数据
-    OnMessage(handler func(clientID string, data []byte)) ServerBus
-    
-    // Broadcast 向所有客户端广播
-    Broadcast(data []byte) error
-    
-    // SendTo 向指定客户端发送
-    SendTo(clientID string, data []byte) error
-    
-    // GetClient 获取客户端Bus实例
-    GetClient(clientID string) (*ClientBus, error)
-    
-    // GetClients 获取所有客户端ID列表
-    GetClients() []string
-    
-    // ClientCount 获取客户端数量
-    ClientCount() int
-    
-    // IsRunning 返回运行状态
-    IsRunning() bool
-}
-```
-
-### 8.2 ClientBus结构
-
-```go
-// ClientBus 客户端Bus实例（服务端侧）
-type ClientBus struct {
-    // ClientID 客户端唯一标识
-    ClientID string
-    
-    // SessionID 会话标识
-    SessionID string
-    
-    // ConnectedAt 连接时间
-    ConnectedAt time.Time
-    
-    // Serializer 选定的序列化器
-    Serializer Serializer
-    
-    // CodecChain 选定的Codec链
-    CodecChain CodecChain
-    
-    // Channel 客户端信道
-    Channel Channel
-}
-```
-
----
-
-## 9. MultiBus接口规范
-
-### 9.1 MultiBus接口
-
-```go
-// MultiBus 多信道总线接口
-type MultiBus interface {
-    // AddBus 添加Bus实例
-    //
-    // 参数约束:
-    //   - bus: 已配置好的Bus实例
-    //   - weight: 权重（用于加权随机分配，>=1）
-    //   - alias: 可选别名（用于SendVia指定）
-    //
-    // 返回值保证:
-    //   - Bus被添加到可用列表
-    //   - 返回分配的busID（可用于SendVia）
-    AddBus(bus Bus, weight int, alias string) (busID string, error)
-    
-    // RemoveBus 移除Bus实例
-    RemoveBus(busID string) error
-    
-    // Send 随机多信道发送
-    //
-    // 处理流程:
-    //   - 如EnableFragment: Fragment.Split → 按策略分配分片到各Bus → 各Bus.Send
-    //   - 如非分片: 按策略选择一个Bus → Bus.Send
-    //
-    // 分配策略:
-    //   - 由SendStrategy控制
-    Send(data []byte) error
-    
-    // SendVia 指定单一信道发送
-    //
-    // 参数约束:
-    //   - busID: AddBus返回的标识或别名
-    //
-    // 行为特性:
-    //   - 不分片，完整数据通过指定信道发送
-    SendVia(busID string, data []byte) error
-    
-    // SendWithStrategy 按指定策略发送
-    SendWithStrategy(data []byte, strategy SendStrategy) error
-    
-    // SetFragment 设置分片器
-    SetFragment(fragment Fragment) MultiBus
-    
-    // SetDefaultStrategy 设置默认发送策略
     SetDefaultStrategy(strategy SendStrategy) MultiBus
     
     // OnMessage 注册消息回调
@@ -1076,143 +878,43 @@ type MultiBus interface {
 }
 ```
 
-### 9.2 SendStrategy结构
-
-```go
-// SendMode 发送模式
-type SendMode int
-
-const (
-    // ModeRandom 随机分配
-    // 每个分片随机选择一个Bus
-    ModeRandom SendMode = iota
-    
-    // ModeWeighted 加权随机
-    // 根据AddBus时设置的weight进行加权随机
-    ModeWeighted
-    
-    // ModeRoundRobin 轮询分配
-    // 分片依次分配到各Bus
-    ModeRoundRobin
-    
-    // ModeLeastLoad 最小负载
-    // 选择当前负载最小的Bus
-    ModeLeastLoad
-    
-    // ModeManual 手动指定
-    // 使用SendVia手动指定
-    ModeManual
-)
-
-// SendStrategy 发送策略
-type SendStrategy struct {
-    // Mode 发送模式
-    Mode SendMode
-    
-    // EnableFragment 是否启用分片
-    EnableFragment bool
-    
-    // MaxFragmentSize 最大分片大小
-    MaxFragmentSize int
-    
-    // WeightOverrides 权重覆盖（可选）
-    // key: busID, value: weight
-    WeightOverrides map[string]int
-    
-    // BusOrder 指定Bus顺序（用于RoundRobin）
-    BusOrder []string
-}
-```
-
 ---
 
-## 10. Handshake协议接口
+## 8. Negotiate（能力协商）接口规范
 
-### 10.1 Handshake接口
+### 9.1 NegotiateRequest结构
 
 ```go
-package handshake
+package negotiate
 
-// HandshakeRequest 客户端协商请求
-type HandshakeRequest struct {
-    // ClientID 客户端标识
-    ClientID string
+// NegotiateRequest 客户端协商请求
+type NegotiateRequest struct {
+    // ChannelBitmap 信道类型位图
+    // Bit 0=WS, 1=TCP, 2=QUIC, 3=UDP, 4=ICMP, 5=DNS, 6=HTTP
+    ChannelBitmap []byte
     
-    // SupportedSerializers 支持的序列化器列表
-    SupportedSerializers []SerializerInfo
-    
-    // SupportedCodecChains 支持的Codec链信息
-    SupportedCodecChains []CodecChainInfo
-    
-    // MinSecurityLevel 要求的最低安全等级
-    MinSecurityLevel SecurityLevel
+    // CodecBitmap Codec类型位图
+    // Bit 0=Plain, 1=Base64, 2=AES256, 3=XOR, 4=ChaCha20, 5=RSA, 6=GZIP, 7=ZSTD
+    CodecBitmap []byte
     
     // Timestamp 请求时间戳
     Timestamp int64
-    
-    // Version 协议版本
-    Version uint8
 }
 
-// SerializerInfo 序列化器信息
-type SerializerInfo struct {
-    Name     string
-    Priority int
-}
-
-// CodecChainInfo Codec链信息
-// 注意：不暴露具体Codec名称，仅暴露安全等级
-type CodecChainInfo struct {
-    // SecurityLevel 链的整体安全等级
-    SecurityLevel SecurityLevel
+// NegotiateResponse 服务端响应
+type NegotiateResponse struct {
+    // ChannelBitmap 协商后的信道类型位图
+    ChannelBitmap []byte
     
-    // ChainLength 链长度
-    ChainLength int
-    
-    // Hash 链配置哈希（用于验证，不暴露配置）
-    Hash string
-}
-
-// HandshakeResponse 服务端响应
-type HandshakeResponse struct {
-    // Accepted 是否接受
-    Accepted bool
-    
-    // RejectReason 拒绝原因
-    RejectReason string
-    
-    // SelectedSerializer 选定的序列化器
-    SelectedSerializer string
-    
-    // SelectedCodecChainInfo 选定的Codec链信息
-    SelectedCodecChainInfo CodecChainInfo
-    
-    // SessionID 分配的会话ID
-    SessionID string
-    
-    // ServerChallenge 服务端挑战数据
-    // 客户端需要用选定CodecChain处理后返回
-    ServerChallenge []byte
+    // CodecBitmap 协商后的Codec类型位图
+    CodecBitmap []byte
     
     // Timestamp 响应时间戳
     Timestamp int64
 }
-
-// HandshakeConfirm 客户端确认
-type HandshakeConfirm struct {
-    // SessionID 会话ID
-    SessionID string
-    
-    // ChallengeResponse 挑战响应
-    // ServerChallenge经过CodecChain.Encode后的结果
-    ChallengeResponse []byte
-    
-    // Timestamp 确认时间戳
-    Timestamp int64
-}
 ```
 
-### 10.2 NegotiationPolicy结构
+### 9.2 NegotiationPolicy结构
 
 ```go
 // NegotiationPolicy 协商策略
@@ -1224,13 +926,6 @@ type NegotiationPolicy struct {
     // MinSecurityLevel 最低安全等级
     // Release模式必须>=SecurityLevelMedium
     MinSecurityLevel SecurityLevel
-    
-    // AllowedSerializers 允许的序列化器白名单
-    // 空列表表示允许所有已注册的
-    AllowedSerializers []string
-    
-    // PreferredSerializer 优先选择的序列化器
-    PreferredSerializer string
     
     // PreferredCodecChainSecurity 优先选择的Codec链安全等级
     PreferredCodecChainSecurity SecurityLevel
@@ -1255,8 +950,6 @@ func DefaultNegotiationPolicy() NegotiationPolicy {
     return NegotiationPolicy{
         DebugMode:                  false,
         MinSecurityLevel:           SecurityLevelMedium,
-        AllowedSerializers:         []string{},
-        PreferredSerializer:        "",
         PreferredCodecChainSecurity: SecurityLevelHigh,
         MaxCodecChainLength:        5,
         ChallengeTimeout:           30 * time.Second,
@@ -1270,8 +963,6 @@ func DebugNegotiationPolicy() NegotiationPolicy {
     return NegotiationPolicy{
         DebugMode:                  true,
         MinSecurityLevel:           SecurityLevelNone,
-        AllowedSerializers:         []string{"plain"},
-        PreferredSerializer:        "plain",
         PreferredCodecChainSecurity: SecurityLevelNone,
         MaxCodecChainLength:        3,
         ChallengeTimeout:           60 * time.Second,
@@ -1283,9 +974,9 @@ func DebugNegotiationPolicy() NegotiationPolicy {
 
 ---
 
-## 11. SessionRegistry接口规范
+## 10. SessionRegistry接口规范
 
-### 11.1 SessionRegistry接口
+### 10.1 SessionRegistry接口
 
 ```go
 package registry
@@ -1327,7 +1018,7 @@ type SessionRegistry interface {
 }
 ```
 
-### 11.2 SessionConfig结构
+### 10.2 SessionConfig结构
 
 ```go
 // SessionConfig 会话配置
@@ -1335,9 +1026,6 @@ type SessionRegistry interface {
 type SessionConfig struct {
     // SessionID 会话唯一标识
     SessionID string
-    
-    // Serializer 序列化器实例
-    Serializer Serializer
     
     // CodecChain Codec链实例
     CodecChain CodecChain
@@ -1364,9 +1052,9 @@ type SessionConfig struct {
 
 ---
 
-## 12. 模块注册机制
+## 11. 模块注册机制
 
-### 12.1 Build Tags设计
+### 11.1 Build Tags设计
 
 ```go
 // 每个模块实现文件使用build tags控制编译
@@ -1382,7 +1070,7 @@ type SessionConfig struct {
 // //go:build !plain_serializer
 ```
 
-### 12.2 编译命令示例
+### 11.2 编译命令示例
 
 ```bash
 # 编译TCP信道 + AES加密 + JSON序列化
@@ -1398,7 +1086,7 @@ go build -tags "icmp_channel,rsa_codec,protobuf_serializer"
 go build -tags "full"
 ```
 
-### 12.3 全局注册表设计
+### 11.3 全局注册表设计
 
 ```go
 // internal/registry/global.go
@@ -1430,12 +1118,34 @@ func init() {
 
 ---
 
-## 13. 错误类型定义
+## 12. 错误类型定义
 
-### 13.1 错误层次结构
+### 12.1 错误层次结构
+
+VoidBus v2.0 采用统一的错误处理策略，支持错误严重程度分级和上下文信息。
 
 ```go
 package voidbus
+
+// ErrorSeverity 错误严重程度
+type ErrorSeverity int
+
+const (
+    SeverityLow      ErrorSeverity = iota // 可恢复，不影响主流程
+    SeverityMedium                         // 需处理，可能影响部分功能
+    SeverityHigh                           // 严重影响，主要功能受阻
+    SeverityCritical                       // 致命错误，无法继续运行
+)
+
+func (s ErrorSeverity) String() string {
+    switch s {
+    case SeverityLow:      return "LOW"
+    case SeverityMedium:   return "MEDIUM"
+    case SeverityHigh:     return "HIGH"
+    case SeverityCritical: return "CRITICAL"
+    default:               return "UNKNOWN"
+    }
+}
 
 // VoidBusError 基础错误类型
 type VoidBusError struct {
@@ -1445,41 +1155,56 @@ type VoidBusError struct {
     Msg     string    // 描述信息
 }
 
-// ChannelError 信道错误
-type ChannelError struct {
-    Op        string
-    Err       error
-    Msg       string
-    Retryable bool    // 是否可重试
+func (e *VoidBusError) Error() string {
+    if e.Err != nil {
+        return fmt.Sprintf("[%s/%s] %s: %v", e.Module, e.Op, e.Msg, e.Err)
+    }
+    return fmt.Sprintf("[%s/%s] %s", e.Module, e.Op, e.Msg)
 }
 
-// CodecError Codec错误
-type CodecError struct {
-    Op          string
-    Err         error
-    Msg         string
-    SecurityLevel SecurityLevel  // 相关安全等级
+func (e *VoidBusError) Unwrap() error {
+    return e.Err
 }
 
-// FragmentError 分片错误
-type FragmentError struct {
-    Op         string
-    Err        error
-    Msg        string
-    FragmentID string    // 相关分片ID
+// EnhancedVoidBusError 增强错误类型
+// 支持严重程度和上下文信息
+type EnhancedVoidBusError struct {
+    *VoidBusError
+    Severity    ErrorSeverity
+    Recoverable bool
+    Context     map[string]interface{}  // 上下文信息（类型安全建议使用固定字段）
 }
 
-// HandshakeError 协商错误
-type HandshakeError struct {
-    Op             string
-    Err            error
-    Msg            string
-    ClientID       string
-    SecurityIssue  bool    // 是否涉及安全问题
+func (e *EnhancedVoidBusError) Error() string {
+    return fmt.Sprintf("[%s/%s] %s (severity: %s, recoverable: %v)",
+        e.Module, e.Op, e.Msg, e.Severity.String(), e.Recoverable)
 }
+
+// 错误辅助函数
+func IsVoidBusError(err error) bool
+func GetModule(err error) string
+func GetOperation(err error) string
+func IsEnhancedError(err error) bool
+func GetSeverity(err error) ErrorSeverity
+func IsRecoverable(err error) bool
+func IsCritical(err error) bool
+func GetContext(err error) map[string]interface{}
 ```
 
-### 13.2 预定义错误
+### 12.2 错误包装函数
+
+| 函数 | 用途 | 严重程度 | 示例 |
+|------|------|----------|------|
+| `NewError(op, module, err)` | 创建基础错误 | SeverityMedium | `NewError("Encode", "codec", err)` |
+| `WrapError(op, module, err, msg)` | 包装错误并添加消息 | SeverityMedium | `WrapError("Send", "bus", err, "send failed")` |
+| `WrapModuleError(op, module, err)` | 模块级错误包装 | SeverityMedium | `WrapModuleError("SelectChain", "codec", err)` |
+| `MustWrap(op, module, err)` | 关键路径强制包装 | SeverityHigh | `MustWrap("Connect", "channel", err)` |
+| `SoftWrap(op, module, err)` | 可选路径软包装 | SeverityLow | `SoftWrap("Cleanup", "session", err)` |
+| `RecoverableError(op, module, err, msg)` | 可恢复错误 | SeverityMedium + Recoverable=true | `RecoverableError("Retry", "channel", err, "temporary failure")` |
+| `CriticalError(op, module, err, msg)` | 致命错误 | SeverityCritical | `CriticalError("Init", "bus", err, "initialization failed")` |
+| `WrapWithContext(op, module, err, msg, ctx)` | 带上下文包装 | SeverityMedium | `WrapWithContext("Process", "fragment", err, "fragment lost", map[string]interface{}{"fragmentID": "xxx"})` |
+
+### 12.3 预定义错误
 
 ```go
 var (
@@ -1487,11 +1212,6 @@ var (
     ErrNotImplemented     = errors.New("not implemented")
     ErrInvalidConfig      = errors.New("invalid configuration")
     ErrModuleNotSet       = errors.New("module not set")
-    
-    // Serializer错误
-    ErrSerializationFailed   = errors.New("serialization failed")
-    ErrDeserializationFailed = errors.New("deserialization failed")
-    ErrInvalidSerializer     = errors.New("invalid serializer")
     
     // Codec错误
     ErrCodecNotFound      = errors.New("codec not found")
@@ -1509,6 +1229,7 @@ var (
     ErrChannelDisconnected = errors.New("channel disconnected")
     ErrChannelSendFailed  = errors.New("channel send failed")
     ErrChannelRecvFailed  = errors.New("channel receive failed")
+    ErrNoHealthyChannel   = errors.New("no healthy channel available")
     
     // Fragment错误
     ErrFragmentFailed     = errors.New("fragmentation failed")
@@ -1523,218 +1244,258 @@ var (
     ErrKeyExpired         = errors.New("key expired")
     ErrKeyFetchFailed     = errors.New("key fetch failed")
     
-    // Handshake错误
+    // Handshake/Negotiate错误
     ErrHandshakeFailed      = errors.New("handshake failed")
     ErrHandshakeTimeout     = errors.New("handshake timeout")
     ErrSecurityLevelMismatch = errors.New("security level mismatch")
     ErrChallengeFailed      = errors.New("challenge verification failed")
     ErrDegradationAttack    = errors.New("potential degradation attack detected")
+    ErrNegotiationFailed    = errors.New("negotiation failed")
+    
+    // Bus错误
+    ErrBusNotRunning      = errors.New("bus not running")
+    ErrBusAlreadyRunning  = errors.New("bus already running")
+    
+    // Session错误
+    ErrSessionNotFound    = errors.New("session not found")
+    ErrSessionExpired     = errors.New("session expired")
 )
+```
+
+### 12.4 错误处理最佳实践
+
+```go
+// 创建 Bus 时检查错误
+bus, err := voidbus.New()
+if err != nil {
+    if voidbus.IsCritical(err) {
+        log.Fatal("Bus initialization failed: ", err)
+    }
+    // 可恢复错误处理
+    log.Warn("Bus created with warnings: ", err)
+}
+
+// 发送时处理错误
+err = bus.Send(data)
+if err != nil {
+    if voidbus.IsRecoverable(err) {
+        // 可恢复：重试或降级
+        retryCount++
+        if retryCount < maxRetry {
+            continue
+        }
+    }
+    // 不可恢复：记录并退出
+    log.Error("Send failed: ", err)
+    return err
+}
+
+// 模块级错误包装
+func (m *CodecManager) SelectChain() (CodecChain, string, error) {
+    chain, hash, err := m.randomSelect(m.maxDepth)
+    if err != nil {
+        return nil, "", WrapModuleError("SelectChain", "codec", err)
+    }
+    return chain, hash, nil
+}
 ```
 
 ---
 
-## 14. 使用示例
+## 13. 使用示例
 
-### 14.1 基本使用（客户端）
+### 13.1 基本使用（客户端）
 
 ```go
 package main
 
 import (
-    "VoidBus"
-    "VoidBus/channel/tcp"
-    "VoidBus/codec"
-    "VoidBus/codec/aes"
-    "VoidBus/codec/base64"
-    "VoidBus/keyprovider/embedded"
-    "VoidBus/serializer/json"
+    "fmt"
+    "time"
+    
+    voidbus "github.com/Script-OS/VoidBus"
+    "github.com/Script-OS/VoidBus/channel/tcp"
+    "github.com/Script-OS/VoidBus/codec/base64"
+    "github.com/Script-OS/VoidBus/codec/xor"
 )
 
 func main() {
-    // 创建密钥提供者
-    keyProvider := embedded.New(embedded.Config{
-        Key:       []byte("32-byte-key-here..."),
-        Algorithm: "AES-256-GCM",
+    // 1. 创建 Bus
+    bus, err := voidbus.New(nil)
+    if err != nil {
+        panic(err)
+    }
+    
+    // 2. 注册 Codec
+    bus.RegisterCodec(base64.New())
+    bus.RegisterCodec(xor.New())
+    
+    // 3. 添加 Channel（配置包含目标地址）
+    ch := tcp.NewClientChannel(&tcp.ClientConfig{
+        Address:        "localhost:8080",
+        ConnectTimeout: 5 * time.Second,
     })
+    bus.AddChannel(ch)
     
-    // 创建Codec链: AES-256 -> Base64
-    codecChain := codec.NewChain().
-        AddCodec(aes.NewAES256GCM()).
-        AddCodec(base64.New())
-    codecChain.SetKeyProvider(keyProvider)
+    // 4. Dial 连接（自动执行协商）
+    conn, err := bus.Dial(ch)
+    if err != nil {
+        panic(err)
+    }
+    defer conn.Close()
     
-    // 创建Bus
-    bus := voidbus.NewBuilder().
-        UseSerializerInstance(json.New()).
-        UseCodecChain(codecChain).
-        UseChannel(tcp.NewClient("server:8080")).
-        UseKeyProvider(keyProvider).
-        WithConfig(voidbus.BusConfig{
-            AutoReconnect: true,
-        }).
-        OnMessage(func(data []byte) {
-            println("Received:", string(data))
-        }).
-        Build()
+    // 5. 发送消息
+    _, err = conn.Write([]byte("Hello, VoidBus!"))
+    if err != nil {
+        fmt.Println("Send error:", err)
+        return
+    }
     
-    bus.Start()
-    bus.Send([]byte("Hello, VoidBus!"))
+    // 6. 接收消息
+    buf := make([]byte, 4096)
+    n, err := conn.Read(buf)
+    if err != nil {
+        fmt.Println("Receive error:", err)
+        return
+    }
+    fmt.Println("Received:", string(buf[:n]))
 }
 ```
 
-### 14.2 服务端使用
+### 13.2 服务端使用
 
 ```go
+package main
+
+import (
+    "fmt"
+    "net"
+    "time"
+    
+    voidbus "github.com/Script-OS/VoidBus"
+    "github.com/Script-OS/VoidBus/channel/tcp"
+    "github.com/Script-OS/VoidBus/codec/base64"
+)
+
+func handleClient(conn net.Conn) {
+    defer conn.Close()
+    
+    buf := make([]byte, 4096)
+    for {
+        // 设置读取超时（用于轮询）
+        conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+        n, err := conn.Read(buf)
+        
+        if err != nil {
+            if netErr, ok := err.(*net.OpError); ok && netErr.Timeout() {
+                continue // 超时，继续轮询
+            }
+            fmt.Println("Client disconnected:", err)
+            return
+        }
+        
+        fmt.Println("Received:", string(buf[:n]))
+        
+        // 回复
+        conn.Write([]byte("ACK: " + string(buf[:n])))
+    }
+}
+
 func main() {
-    // 服务端协商策略
-    policy := voidbus.DefaultNegotiationPolicy()
+    // 1. 创建 Bus
+    bus, err := voidbus.New(nil)
+    if err != nil {
+        panic(err)
+    }
     
-    // 创建ServerBus
-    serverBus := voidbus.NewServerBus().
-        SetNegotiationPolicy(policy).
-        SetSerializer(json.New()).
-        SetCodecChain(codec.NewChain().AddCodec(aes.NewAES256GCM())).
-        SetKeyProvider(embedded.New(embedded.Config{...})).
-        OnClientConnect(func(clientID string, bus *voidbus.ClientBus) {
-            println("Client connected:", clientID)
-        }).
-        OnMessage(func(clientID string, data []byte) {
-            println("Message from", clientID, ":", string(data))
-            // 回复
-            serverBus.SendTo(clientID, []byte("ACK"))
-        })
+    // 2. 注册 Codec
+    bus.RegisterCodec(base64.New())
     
-    serverBus.Listen(":8080")
-    serverBus.Start()
+    // 3. 添加 Server Channel
+    serverCh := tcp.NewServerChannel(&tcp.ServerConfig{
+        Address: ":8080",
+    })
+    bus.AddChannel(serverCh)
+    
+    // 4. Listen 监听
+    listener, err := bus.Listen(serverCh)
+    if err != nil {
+        panic(err)
+    }
+    defer listener.Close()
+    
+    fmt.Println("Server listening on :8080")
+    
+    // 5. 接受客户端连接
+    for {
+        conn, err := listener.Accept()
+        if err != nil {
+            fmt.Println("Accept error:", err)
+            continue
+        }
+        
+        fmt.Println("New client connected")
+        go handleClient(conn)
+    }
 }
 ```
 
-### 14.3 MultiBus使用
+### 13.3 完整交互式示例
 
-```go
-func main() {
-    // 创建多个Bus
-    tcpBus := voidbus.NewBuilder().
-        UseChannel(tcp.NewClient("server:8080")).
-        UseSerializer(json.New()).
-        UseCodecChain(codec.NewChain().AddCodec(aes.NewAES256GCM())).
-        Build()
-    
-    udpBus := voidbus.NewBuilder().
-        UseChannel(udp.NewClient("server:9090")).
-        UseSerializer(json.New()).
-        UseCodecChain(codec.NewChain().AddCodec(base64.New())).
-        Build()
-    
-    // 创建MultiBus
-    multiBus := voidbus.NewMultiBus().
-        AddBus(tcpBus, 2, "primary").   // 权重2
-        AddBus(udpBus, 1, "backup").    // 权重1
-        SetDefaultStrategy(voidbus.SendStrategy{
-            Mode:           voidbus.ModeWeighted,
-            EnableFragment: true,
-            MaxFragmentSize: 1024,
-        }).
-        OnMessage(func(sourceBusID string, data []byte) {
-            println("From", sourceBusID, ":", string(data))
-        })
-    
-    multiBus.Start()
-    
-    // 加权随机多信道发送（自动分片）
-    multiBus.Send([]byte("Large data..."))
-    
-    // 指定单一信道发送
-    multiBus.SendVia("primary", []byte("Important data"))
-}
-```
-
+参见 `example/interactive/` 目录下的完整示例代码：
+- `client/main.go`: 完整的客户端示例
+- `server/main.go`: 完整的服务端示例
 ---
 
-## 15. 版本兼容性说明
+## 14. 实现状态与安全约束
 
-### 15.1 接口稳定性保证
-
-| 接口类型 | 稳定性 | 变更规则 |
-|----------|--------|----------|
-| **核心接口** | 稳定 | 主版本号变更才可修改 |
-| **扩展接口** | 较稳定 | 次版本号变更可扩展 |
-| **内部接口** | 不保证 | 可随时变更 |
-
-### 15.2 废弃规则
-
-```go
-// 废弃接口标记示例
-//
-// Deprecated: Use NewInterface instead. Will be removed in v2.0.
-type OldInterface interface {
-    OldMethod() error
-}
-```
-
-### 15.3 版本号规则
-
-- **主版本号(Major)**: 不兼容的接口变更
-- **次版本号(Minor)**: 新增功能，向后兼容
-- **修订号(Patch)**: Bug修复，向后兼容
-
-示例: `v1.2.3`
-- 1: 主版本
-- 2: 次版本（新增功能）
-- 3: 修订版本（Bug修复）
-
----
-
-## 16. 实现状态与安全约束
-
-### 16.1 接口实现状态
+### 14.1 接口实现状态
 
 | 接口 | 实现文件 | 状态 | 关键方法 |
 |------|----------|------|----------|
-| Serializer | serializer/plain/plain.go | ✅ | Serialize/Deserialize/Name/Priority |
 | Codec | codec/plain/plain.go, base64/base64.go, aes/aes.go | ✅ | Encode/Decode/InternalID/SecurityLevel |
 | KeyAwareCodec | codec/aes/aes.go | ✅ | SetKeyProvider/RequiresKey/KeyAlgorithm |
 | CodecChain | codec/chain.go | ✅ | AddCodec/Encode/Decode/SecurityLevel/Clone |
 | Channel | channel/tcp/tcp.go | ✅ | Send/Receive/Close/IsConnected/Type |
-| ServerChannel | channel/tcp/tcp.go | ✅ | Accept/ListenAddress/ClientCount |
+| ServerChannel | channel/tcp/tcp.go | ✅ | Accept/ListenAddress |
 | KeyProvider | keyprovider/embedded/embedded.go | ✅ | GetKey/RefreshKey/SupportsRefresh/Type |
-| Fragment | fragment/fragment.go | ✅ | Split/Reassemble/GetFragmentInfo |
-| FragmentManager | fragment/fragment.go | ✅ | CreateState/AddFragment/IsComplete/Reassemble |
-| Bus | core/bus.go | ✅ | Send/Receive/Start/Stop/OnMessage |
-| ServerBus | core/serverbus.go | ✅ | Listen/Start/Broadcast/SendTo/OnClientConnect |
-| MultiBus | core/multibus.go | ✅ | AddBus/Send/SendVia/SetDefaultStrategy |
-| SessionRegistry | registry/registry.go | ✅ | Register/Get/Update/Remove/List |
-| ChannelSelector | channel/selector/selector.go | ✅ | Select/SelectForFragment/Name/Reset |
-| FragmentDistributor | protocol/distributor.go | ✅ | Distribute |
+| FragmentManager | fragment/manager.go | ✅ | CreateBuffer/AddFragment/IsComplete/Reassemble |
+| SessionManager | session/manager.go | ✅ | CreateSession/GetSession/CompleteSession |
+| Bus | bus.go | ✅ | Dial/Listen/RegisterCodec/AddChannel |
+| VoidBusConn (net.Conn) | conn.go | ✅ | Read/Write/Close/SetDeadline |
+| VoidBusListener (net.Listener) | listener.go | ✅ | Accept/Close/Addr |
 
-### 16.2 安全约束实现说明
+### 14.2 安全约束实现说明
 
-#### CodecChainInfo（不暴露Codec名称）
+#### Header（暴露字段）
 
 ```go
-// codec/negotiation.go
-type CodecChainInfo struct {
-    SecurityLevel SecurityLevel  // ✅ 可暴露（仅数值）
-    ChainLength   int            // ✅ 可暴露（链长度）
-    Hash          string         // ✅ 可暴露（确定性SHA-256哈希）
-    // ❌ 不暴露 InternalIDs
-    // ❌ 不暴露 Codec 名称
+// protocol/header.go
+type Header struct {
+    SessionID     string    // ✅ 可暴露（UUID）
+    FragmentIndex uint16    // ✅ 可暴露
+    FragmentTotal uint16    // ✅ 可暴露
+    CodecDepth    uint8     // ✅ 可暴露（链深度）
+    CodecHash     [32]byte  // ✅ 可暴露（SHA-256哈希，不暴露具体组合）
+    DataChecksum  uint32    // ✅ 可暴露
+    DataHash      [32]byte  // ✅ 可暴露
+    Timestamp     int64     // ✅ 可暴露
+    Flags         uint8     // ✅ 可暴露
 }
 ```
 
-**验证方法**:
-- HandshakeRequest/Response 中仅传输 CodecChainInfo
-- 具体 Codec 实例存储在本地 SessionRegistry
-- computeChainHash 使用 SHA-256 基于 SecurityLevel 计算
+**安全验证**:
+- CodecHash 基于 code 序列计算，不暴露具体 codec 名称
+- MaxSessionIDLength = 64 防止内存耗尽攻击
+- MaxFragmentTotal = 10000 防止过度分片
+- Timestamp 验证防止重放攻击
 
 #### Session（配置不可传输）
 
 ```go
-// protocol/session.go
+// session/session.go
 type Session struct {
     ID           string      // ✅ 可暴露（间接引用）
-    Serializer   Serializer  // ❌ 仅存储本地
     CodecChain   CodecChain  // ❌ 仅存储本地
     Channel      Channel     // ❌ 仅存储本地
     KeyProvider  KeyProvider // ❌ 仅存储本地
@@ -1744,30 +1505,8 @@ type Session struct {
 
 **验证方法**:
 - Packet.Header 仅包含 SessionID
-- SessionConfig 通过 SessionID 在本地 SessionRegistry 查找
-- Session.Serialize() 返回仅包含 ID 和统计信息的可暴露数据
-
-#### Challenge机制（防降级攻击）
-
-```go
-// protocol/handshake.go
-type HandshakeResponse struct {
-    ServerChallenge []byte  // 服务端生成随机挑战
-}
-
-type HandshakeConfirm struct {
-    ChallengeResponse []byte  // 客户端用CodecChain编码验证
-}
-```
-
-**验证流程**:
-1. Server 生成随机 Challenge (32字节)
-2. Client 用选定的 CodecChain.Encode() 处理 Challenge
-3. Server 验证 ChallengeResponse 是否正确编码
-4. 验证失败返回 ErrDegradationAttack
-
-**待改进**:
-- 当前 simpleChallengeResponse 为演示实现
+- SessionConfig 通过 SessionID 在本地 SessionManager 查找
+- Session.Stats() 返回仅包含统计信息的可暴露数据
 - 生产环境应使用完整 CodecChain.Encode()
 
 ### 16.3 接口使用注意事项

@@ -172,10 +172,23 @@ func (l *voidBusListener) handleClient(clientCh channel.Channel) {
 	}
 
 	// 7. Create new Bus for client (independent session)
-	clientBus, err := New()
+	clientBus, err := New(nil)
 	if err != nil {
 		clientCh.Close()
 		return
+	}
+
+	// 7.0 Enable debug mode for client bus if main bus has debug mode
+	if l.bus.config.DebugMode {
+		clientBus.SetDebugMode(true)
+	}
+
+	// 7.1 Copy codecs from main bus to client bus
+	// Note: clientBus needs codecs to decode incoming messages
+	for _, code := range l.bus.codecManager.GetAvailableCodes() {
+		if c, err := l.bus.codecManager.GetCodec(code); err == nil {
+			clientBus.RegisterCodec(c)
+		}
 	}
 
 	// 8. Apply negotiated codec bitmap to client bus
@@ -185,7 +198,12 @@ func (l *voidBusListener) handleClient(clientCh channel.Channel) {
 	channelID := string(clientCh.Type()) + "-" + internal.GenerateShortID()
 
 	// 10. Add client channel to client bus
-	clientBus.AddChannelWithID(clientCh, channelID)
+	if err := clientBus.AddChannelWithID(clientCh, channelID); err != nil {
+		println("[DEBUG] AddChannelWithID failed:", err.Error())
+		clientCh.Close()
+		return
+	}
+	println("[DEBUG] Added channel to clientBus, channelID:", channelID)
 
 	// 11. Mark client bus as connected and negotiated
 	clientBus.connected.Store(true)
@@ -195,7 +213,20 @@ func (l *voidBusListener) handleClient(clientCh channel.Channel) {
 	recvChan := make(chan []byte, 100)
 
 	// 13. Start receive loop for client bus
-	clientBus.StartReceive()
+	clientBus.running.Store(true)
+	go clientBus.nakBatchLoop()
+	chIDs := clientBus.channelPool.GetChannelIDs()
+	println("[DEBUG] clientBus channel IDs:", len(chIDs))
+	for _, chID := range chIDs {
+		info, err := clientBus.channelPool.GetChannel(chID)
+		if err != nil {
+			println("[DEBUG] GetChannel failed for", chID, ":", err.Error())
+			continue
+		}
+		println("[DEBUG] Starting receiveLoop for channel:", chID)
+		clientBus.wg.Add(1)
+		go clientBus.receiveLoop(info)
+	}
 
 	// 14. Create VoidBusConn for client
 	conn := newVoidBusConn(clientBus, channelID, clientCh.Type(), recvChan)

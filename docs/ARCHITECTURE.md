@@ -452,69 +452,106 @@ type NegotiationResponse struct {
 
 ## 8. 用户 API 设计
 
-### 8.1 核心 API
+### 8.1 核心 API（net.Conn/net.Listener 风格）
+
+VoidBus v3.0 采用 Go 标准库的 `net.Conn` 和 `net.Listener` 风格 API，提供消息式的通信接口。
 
 ```go
-// === 创建与配置 ===
-bus := voidbus.New()
+// === Client 模式 ===
+bus := voidbus.New(nil)
 
-// 添加 Codec（用户自定义代号）
-bus.AddCodec(aes.NewAES256GCM(), "A")       // 代号 "A" = AES
-bus.AddCodec(base64.New(), "B")              // 代号 "B" = Base64
-bus.AddCodec(xor.New(), "X")                 // 代号 "X" = XOR
+// 注册 Codec
+bus.RegisterCodec(base64.New())
+bus.RegisterCodec(xor.New())
 
-// 配置密钥（Codec 需要时）
-bus.SetKey([]byte("secret-key-32bytes"))
+// 添加 Channel（配置包含目标地址）
+ch := tcp.NewClientChannel(&tcp.ClientConfig{Address: "server:8080"})
+bus.AddChannel(ch)
 
-// 配置最大链深度
-bus.SetMaxCodecDepth(2)                      // 最多 2 层 Codec
+// Dial 连接（自动执行协商）
+conn, err := bus.Dial(ch)  // 返回 net.Conn
 
-// 添加 Channel
-bus.AddChannel(tcp.NewClient("server:8080"))
-bus.AddChannel(dns.NewClient("dns.server"))  // DNS 低 MTU 示例
+// 消息式通信
+conn.Write([]byte("hello world"))      // 发送一条完整消息
+buf := make([]byte, 4096)
+n, err := conn.Read(buf)               // 接收一条完整消息
 
-// 配置 MTU（可选覆盖）
-bus.SetChannelMTU("dns", 60)                 // DNS 隐蔽信道建议小 MTU
+conn.Close()                           // 关闭连接
 
-// === 连接与协商 ===
-bus.Connect("remote-address")                // 执行能力协商
+// === Server 模式 ===
+bus := voidbus.New(nil)
+bus.RegisterCodec(base64.New())
 
-// === 发送 ===
-bus.Send([]byte("hello world"))              // 创建 Session1，自动切片+编码+分发
-bus.Send([]byte("another data"))             // 创建 Session2，并行处理
+// 添加 Server Channel（配置包含监听地址）
+serverCh := tcp.NewServerChannel(&tcp.ServerConfig{Address: ":8080"})
+bus.AddChannel(serverCh)
 
-// === 接收 ===
-// 模式一：阻塞式（默认）
-data, err := bus.Receive()                   // 阻塞直到收到完整消息
+// Listen 监听
+listener, err := bus.Listen(serverCh)  // 返回 net.Listener
 
-// 模式二：回调式
-bus.OnMessage(func(data []byte) {
-    fmt.Println("Received:", string(data))
-})
-bus.StartReceive()                           // 启动后台接收循环
-
-// === 生命周期 ===
-bus.Close()                                  // 关闭所有 Channel，清理资源
+for {
+    conn, err := listener.Accept()     // 接受新客户端连接（已协商）
+    
+    go func(c net.Conn) {
+        buf := make([]byte, 4096)
+        n, _ := c.Read(buf)            // 接收一条完整消息
+        c.Write([]byte("echo"))        // 发送一条完整消息
+        c.Close()
+    }(conn)
+}
 ```
 
-### 8.2 配置结构
+### 8.2 消息语义
+
+| 方法 | 语义 | 说明 |
+|------|------|------|
+| `Read(buf)` | 返回一条完整消息 | 自动重组、解码，每次调用返回一条消息 |
+| `Write(data)` | 写入一条完整消息 | 自动编码、分片、多 Channel 分发 |
+| `SetDeadline` | 整条消息的超时 | 重组/编码/发送的总超时 |
+| `LocalAddr` | 返回本地地址 | 已注册 Channel 的地址 |
+| `RemoteAddr` | 返回对端地址 | Dial 时 Channel 的目标地址 |
+
+### 8.3 内部流程
+
+**Dial 流程**:
+```
+bus.Dial(ch)
+    │
+    ├── 1. CreateNegotiateRequest (从注册的 codecs 生成 Bitmap)
+    ├── 2. Send NegotiateRequest through Channel
+    ├── 3. Receive NegotiateResponse
+    ├── 4. ApplyNegotiateResponse (设置协商后的 codecs)
+    ├── 5. StartReceiveLoop (后台接收循环)
+    └── 6. Return net.Conn
+```
+
+**Listen 流程**:
+```
+bus.Listen(serverCh)
+    │
+    ├── 1. Mark as running
+    └── 2. Return net.Listener
+    
+listener.Accept()
+    │
+    ├── 1. Accept new client connection
+    ├── 2. Receive NegotiateRequest
+    ├── 3. HandleNegotiateRequest (生成 NegotiateResponse)
+    ├── 4. Send NegotiateResponse
+    ├── 5. Create clientBus with negotiated codecs
+    ├── 6. Start clientBus receive loop
+    └── 7. Return net.Conn (for this client)
+```
+
+### 8.4 配置结构
 
 ```go
 type BusConfig struct {
-    MaxCodecDepth     int           // 最大链深度（用户配置）
-    DefaultTimeout    time.Duration // 默认超时
-    MaxRetransmit     int           // 最大重传次数
-    ReceiveMode       ReceiveMode   // 阻塞/回调
-    MinMTU            int           // 最小 MTU
-    MaxMTU            int           // 最大 MTU
+    MaxCodecDepth     int           // 最大链深度（默认 2）
+    DefaultMTU        int           // 默认 MTU（默认 1024）
+    RecvBufferSize    int           // 接收队列大小（默认 100）
+    DebugMode         bool          // 调试模式
 }
-
-type ReceiveMode int
-
-const (
-    ReceiveModeBlocking ReceiveMode = iota  // 阻塞式（默认）
-    ReceiveModeCallback                       // 回调式
-)
 ```
 
 ---
@@ -523,7 +560,10 @@ const (
 
 ```
 VoidBus/
-├── bus.go                    # 核心 Bus 实现（统一入口）
+├── bus.go                    # 核心 Bus 实现（Dial/Listen API）
+├── addr.go                   # voidBusAddr 实现 net.Addr
+├── conn.go                   # voidBusConn 实现 net.Conn（消息式 Read/Write）
+├── listener.go               # voidBusListener 实现 net.Listener
 ├── config.go                 # BusConfig 配置结构
 ├── errors.go                 # 全局错误定义
 ├── module.go                 # Module 接口抽象
@@ -542,7 +582,7 @@ VoidBus/
 │
 ├── channel/                  # 信道模块
 │   ├── pool.go               # ChannelPool（MTU+健康度）+ HealthEvaluator
-│   ├── interface.go          # Channel 接口（含 DefaultMTU()）
+│   ├── interface.go          # Channel 接口（含 DefaultMTU, ServerChannel）
 │   ├── tcp/                  # TCP Channel
 │   ├── udp/                  # UDP Channel
 │   ├── dns/                  # DNS Channel（低MTU示例）
@@ -559,7 +599,12 @@ VoidBus/
 │   └── session.go            # Session 结构定义
 │
 ├── protocol/                 # 协议层
-│   └── header.go             # V2Header 编解码 + NAK/END_ACK 消息
+│   └── header.go             # Header 编解码 + NAK/END_ACK 消息
+│
+├── negotiate/                # 协商模块
+│   ├── negotiate.go          # NegotiateRequest/Response 编解码
+│   ├── server.go             # ServerNegotiator
+│   └── bitmap.go             # Bitmap 操作
 │
 ├── internal/                 # 内部工具
 │   ├── hash.go               # Hash 计算（SHA256）+ HashCache
@@ -573,8 +618,11 @@ VoidBus/
 │   ├── keyprovider.go        # KeyProvider 接口
 │   └── embedded/             # 嵌入式密钥提供者
 │
-└── examples/                 # 使用示例
-    └── v2basic/              # V2 基础使用示例
+└── example/                  # 使用示例
+    └── interactive/          # 交互式 Client/Server 示例
+        ├── client/main.go    # Client 示例
+        ├── server/main.go    # Server 示例
+        └── README.md         # 示例文档
 ```
 
 ---
@@ -656,58 +704,9 @@ VoidBus/
 
 ---
 
-## 12. 变更历史
+## 12. 安全验证设计
 
-### v2.0.0 (当前版本) - 架构重构
-
-**重大变更**：
-- 取消 Serializer 模块
-- 取消 Bus/MultiBus 分离，统一为单一 Bus
-- 新增 Codec 随机选择 + Hash 匹配机制
-- 新增自适应切片（基于 Channel MTU）
-- 新增多信道随机分发
-- 新增分片重传机制（NAK）
-- 新增 Session 生命周期管理
-- 新增能力协商协议
-
-**迁移指南**：
-
-```go
-// 旧 API (v1.x)
-bus := core.NewBuilder().
-    UseSerializerInstance(json.New()).
-    UseCodecChain(codecChain).
-    UseChannel(tcp.NewClient("server:8080")).
-    Build()
-
-// 新 API (v2.0)
-bus, err := voidbus.New()
-if err != nil {
-    // 统一错误处理
-    if voidbus.IsCritical(err) {
-        panic(err)
-    }
-    // 可恢复错误处理
-}
-bus.AddCodec(aes.NewAES256Codec(), "A")
-bus.AddCodec(base64.New(), "B")
-bus.SetMaxCodecDepth(2)
-bus.AddChannel(tcp.NewClient("server:8080"))
-bus.Connect("remote-address")
-```
-
-### v1.0.0 - 初始版本
-
-- 四层分离架构：Serializer + Codec + Channel + Fragment
-- Codec 链式组合
-- Bus / ServerBus / MultiBus 三种模式
-- 安全协商机制
-
----
-
-## 8. 安全验证设计 (v2.0)
-
-### 8.1 Protocol Header 安全验证
+### 12.1 Protocol Header 安全验证
 
 VoidBus v2.0 在 `DecodeHeader` 中实现了完整的安全验证，防止多种攻击：
 
@@ -750,7 +749,7 @@ type V2ValidationError struct {
 }
 ```
 
-### 8.2 Timestamp 验证逻辑
+### 12.2 Timestamp 验证逻辑
 
 ```go
 now := time.Now().Unix()
@@ -769,9 +768,9 @@ if age < MinTimestampAge {
 
 ---
 
-## 9. 统一错误处理策略 (v2.0)
+## 13. 统一错误处理策略
 
-### 9.1 错误严重程度
+### 13.1 错误严重程度
 
 VoidBus v2.0 引入了错误严重程度分级：
 
@@ -786,7 +785,7 @@ const (
 )
 ```
 
-### 9.2 EnhancedVoidBusError
+### 13.2 EnhancedVoidBusError
 
 增强错误类型支持严重程度和上下文信息：
 
@@ -804,7 +803,7 @@ func (e *EnhancedVoidBusError) Error() string {
 }
 ```
 
-### 9.3 统一错误包装函数
+### 13.3 统一错误包装函数
 
 | 函数 | 用途 | 严重程度 |
 |------|------|----------|
@@ -814,7 +813,7 @@ func (e *EnhancedVoidBusError) Error() string {
 | `CriticalError(...)` | 致命错误 | SeverityCritical |
 | `WrapWithContext(...)` | 带上下文包装 | SeverityMedium |
 
-### 9.4 错误辅助函数
+### 13.4 错误辅助函数
 
 ```go
 // 检查是否为增强错误
@@ -831,36 +830,4 @@ func IsCritical(err error) bool
 
 // 检查是否为高严重程度
 func IsHighSeverity(err error) bool
-```
-
-### 9.5 API 签名变更
-
-**变更对比**：
-
-| 函数 | 旧签名 | 新签名 |
-|------|--------|--------|
-| `New()` | `*Bus` | `(*Bus, error)` |
-| `NewWithConfig()` | `*Bus` | `(*Bus, error)` |
-| `SetKey()` | `void` (静默失败) | `error` |
-
-**使用示例**：
-
-```go
-// 旧 API（静默失败）
-bus := voidbus.New()
-bus.SetKey(key)  // 失败时静默返回
-
-// 新 API（显式错误）
-bus, err := voidbus.New()
-if err != nil {
-    if voidbus.IsCritical(err) {
-        log.Fatal(err)
-    }
-    // 可恢复错误处理
-}
-
-err = bus.SetKey(key)
-if err != nil {
-    log.Printf("SetKey failed: %v", err)
-}
 ```

@@ -68,21 +68,42 @@ func (c *voidBusConn) Read(b []byte) (n int, err error) {
 	c.closeMu.Unlock()
 
 	// Wait for complete message
+	// If no deadline set (zero value), wait indefinitely
+	if c.readDeadline.IsZero() {
+		select {
+		case data := <-c.recvChan:
+			// Complete message arrived
+			if len(data) > len(b) {
+				// Buffer too small, return required size
+				return len(data), ErrBufferTooSmall
+			}
+			copy(b, data)
+			return len(data), nil
+		case <-c.bus.stopChan:
+			return 0, net.ErrClosed
+		}
+	}
+
+	// Wait with deadline
 	select {
 	case data := <-c.recvChan:
 		// Complete message arrived
-		// Check if buffer is large enough
 		if len(data) > len(b) {
 			// Buffer too small, return required size
 			return len(data), ErrBufferTooSmall
 		}
-
-		// Copy complete message to buffer
 		copy(b, data)
 		return len(data), nil
 
 	case <-time.After(time.Until(c.readDeadline)):
-		return 0, os.ErrDeadlineExceeded
+		// Return net.Conn compliant timeout error
+		return 0, &net.OpError{
+			Op:     "read",
+			Net:    "voidbus",
+			Source: c.localAddr,
+			Addr:   c.remoteAddr,
+			Err:    os.ErrDeadlineExceeded,
+		}
 
 	case <-c.bus.stopChan:
 		return 0, net.ErrClosed
@@ -95,7 +116,13 @@ func (c *voidBusConn) Read(b []byte) (n int, err error) {
 func (c *voidBusConn) Write(b []byte) (n int, err error) {
 	// Check write deadline
 	if !c.writeDeadline.IsZero() && time.Now().After(c.writeDeadline) {
-		return 0, os.ErrDeadlineExceeded
+		return 0, &net.OpError{
+			Op:     "write",
+			Net:    "voidbus",
+			Source: c.localAddr,
+			Addr:   c.remoteAddr,
+			Err:    os.ErrDeadlineExceeded,
+		}
 	}
 
 	// Check if closed
@@ -114,7 +141,7 @@ func (c *voidBusConn) Write(b []byte) (n int, err error) {
 		defer cancel()
 	}
 
-	if err := c.bus.SendWithContext(ctx, b); err != nil {
+	if err := c.bus.sendInternal(ctx, b); err != nil {
 		return 0, err
 	}
 
@@ -123,7 +150,7 @@ func (c *voidBusConn) Write(b []byte) (n int, err error) {
 }
 
 // Close closes the connection.
-// Does not close the underlying channel (managed by Bus).
+// Calls bus.Stop() to stop the receive loop.
 func (c *voidBusConn) Close() error {
 	c.closeMu.Lock()
 	defer c.closeMu.Unlock()
@@ -133,8 +160,10 @@ func (c *voidBusConn) Close() error {
 	}
 	c.closed = true
 
-	// Channel lifecycle is managed by Bus, not by conn
-	// Just mark connection as closed
+	// Stop the bus (this will close stopChan and stop receiveLoop)
+	// Note: For client mode, this stops the entire bus
+	// For server mode, each client has its own clientBus
+	c.bus.Stop()
 
 	return nil
 }
