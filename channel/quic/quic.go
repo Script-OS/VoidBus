@@ -18,8 +18,15 @@ package quic
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
+	"fmt"
+	"math/big"
+	"net"
 	"sync"
 	"time"
 
@@ -662,11 +669,53 @@ func (m *Module) Type() channel.ChannelType {
 }
 
 // generateSelfSignedCert generates a self-signed TLS certificate for testing.
+//
+// This function creates a temporary self-signed certificate for testing purposes only.
+// Production deployments MUST provide proper TLS certificates via config.TLSConfig.
+//
+// Certificate Properties:
+//   - RSA 2048-bit key
+//   - 24-hour validity period
+//   - DNS name: localhost
+//   - Usage: server authentication
 func generateSelfSignedCert() (tls.Certificate, error) {
-	// Note: For production use, provide proper TLS certificate via config.TLSConfig
-	// This is a placeholder for testing purposes only.
-	// In real scenarios, you would use a properly generated certificate.
+	// Generate RSA private key (2048-bit)
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("failed to generate RSA key: %w", err)
+	}
 
-	// For now, return error that proper cert is needed
-	return tls.Certificate{}, errors.New("quic: TLS certificate required for production use; provide config.TLSConfig or use testing")
+	// Create certificate serial number
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("failed to generate serial number: %w", err)
+	}
+
+	// Certificate template
+	template := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"VoidBus Test Certificate"},
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(24 * time.Hour), // 24-hour validity for testing
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+	}
+
+	// Create self-signed certificate
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &privKey.PublicKey, privKey)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("failed to create certificate: %w", err)
+	}
+
+	// Build tls.Certificate
+	return tls.Certificate{
+		Certificate: [][]byte{certDER},
+		PrivateKey:  privKey,
+		Leaf:        template,
+	}, nil
 }

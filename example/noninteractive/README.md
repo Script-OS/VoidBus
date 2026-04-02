@@ -6,37 +6,53 @@ Automated test suite for VoidBus that verifies multi-channel and multi-codec fun
 
 This test suite covers:
 
-- **Channels**: TCP, WebSocket (UDP, QUIC planned)
-- **Codecs**: base64, xor, aes-256, chacha20 (RSA planned)
+- **Channels**: TCP, WebSocket, UDP, QUIC
+- **Codecs**: base64, xor, aes-256-gcm, chacha20-poly1305, rsa-oaep-sha256 (plain excluded per security policy)
 - **Codec Chains**: depth 1 (single), depth 2 (chained), depth 3 (max depth)
 - **Test Flow**: Server setup -> Client dial -> Auto negotiation -> 3 bidirectional message rounds -> Cleanup
 
 ## Test Matrix
 
-### Phase 1: Single Channel + Single Codec
+Total: **48 tests** (20 + 16 + 12)
 
-| Test ID | Channel | Codec | Key Required |
-|---------|---------|-------|:---:|
-| T01 | TCP | base64 | No |
-| T02 | TCP | xor | Yes |
-| T03 | TCP | aes | Yes |
-| T04 | TCP | chacha20 | Yes |
-| T06 | WebSocket | base64 | No |
-| T07 | WebSocket | xor | Yes |
+### Phase 1: Single Codec Tests (depth=1)
 
-### Phase 2: Codec Chain (depth=2)
+**4 channels × 5 codecs = 20 tests**
 
-| Test ID | Channel | Codec Chain | Key Required |
-|---------|---------|-------------|:---:|
-| T21 | TCP | base64 -> xor | Yes |
-| T24 | WebSocket | base64 -> xor | Yes |
+| Channel | Codecs Tested |
+|---------|---------------|
+| TCP     | base64, xor, aes, chacha20, rsa |
+| WebSocket | base64, xor, aes, chacha20, rsa |
+| UDP     | base64, xor, aes, chacha20, rsa |
+| QUIC    | base64, xor, aes, chacha20, rsa |
 
-### Phase 3: Codec Chain (depth=3, max)
+**Key Requirements:**
+- base64: No key required
+- xor, aes, chacha20: 32-byte key required
+- rsa: RSA key pair generated internally (2048-bit)
 
-| Test ID | Channel | Codec Chain | Key Required |
-|---------|---------|-------------|:---:|
-| T31 | TCP | base64 -> xor -> aes | Yes |
-| T32 | WebSocket | base64 -> xor -> chacha20 | Yes |
+### Phase 2: Dual Codec Chain Tests (depth=2)
+
+**4 channels × 4 chain combinations = 16 tests**
+
+| Chain Combination | Key Used |
+|-------------------|----------|
+| base64 → xor      | xor key (32 bytes) |
+| xor → aes         | aes key (32 bytes) |
+| aes → chacha20    | chacha20 key (32 bytes) |
+| base64 → aes      | aes key (32 bytes) |
+
+**Note:** RSA codec is excluded from codec chains due to message size limitations (~190 bytes max).
+
+### Phase 3: Triple Codec Chain Tests (depth=3)
+
+**4 channels × 3 chain combinations = 12 tests**
+
+| Chain Combination | Key Used |
+|-------------------|----------|
+| base64 → xor → aes | aes key (32 bytes) |
+| xor → aes → chacha20 | chacha20 key (32 bytes) |
+| base64 → aes → chacha20 | chacha20 key (32 bytes) |
 
 ## Quick Start
 
@@ -61,6 +77,21 @@ go run main.go
 
 ### Test Keys
 All encryption codecs use fixed 32-byte test keys created with `make([]byte, 32)` + `copy()` to ensure exact length compliance.
+
+### RSA Codec Handling
+- RSA key pair generated once and shared across all RSA tests (lazy initialization)
+- RSA tests use small messages (< 50 bytes) to fit within RSA encryption limit (~190 bytes)
+- RSA excluded from codec chains to avoid message size issues
+
+### QUIC Channel Handling
+- Server uses self-signed certificate generated internally
+- Client uses InsecureSkipVerify TLS config (testing only)
+- NextProtos set to ["voidbus"]
+
+### UDP Channel Handling
+- UDP channel has built-in ACK/NAK mechanism for reliability
+- DefaultAckTimeout: 3 seconds
+- MaxRetries: 3
 
 ### Codec Chain Constraint
 No duplicate codec types in a single chain (CodecManager rejects duplicate code registrations).
@@ -100,29 +131,37 @@ go build -o voidbus-test
 ## Output Example
 
 ```
-[PASS] T01-TCP-base64
-[PASS] T02-TCP-xor
-[PASS] T03-TCP-aes
-[PASS] T04-TCP-chacha20
-[PASS] T06-WS-base64
-[PASS] T07-WS-xor
-[PASS] T21-TCP-chain2-base64-xor
-[PASS] T24-WS-chain2-base64-xor
-[PASS] T31-TCP-chain3-base64-xor-aes
-[PASS] T32-WS-chain3-base64-xor-chacha20
+Generated 48 tests: 20 (phase1) + 16 (phase2) + 12 (phase3)
+
+[PASS] P1-T01-tcp-base64
+[PASS] P1-T02-tcp-xor
+[PASS] P1-T03-tcp-aes
+[PASS] P1-T04-tcp-chacha20
+[PASS] P1-T05-tcp-rsa
+...
+[PASS] P2-T01-tcp-chain2-base64-xor
+[PASS] P2-T02-tcp-chain2-xor-aes
+...
+[PASS] P3-T01-tcp-chain3-base64-xor-aes
+[PASS] P3-T02-tcp-chain3-xor-aes-chacha20
+...
 
 ========================================
 VoidBus Non-Interactive Test Report
 ========================================
-Total Tests: 10
-Passed: 10
+Total Tests: 48
+Passed: 48
 Failed: 0
 ========================================
 ```
 
-## Planned Tests (TODO)
+## Test Naming Convention
 
-- UDP channel tests (T11-T14, T26-T27, T35-T36)
-- QUIC channel tests (T16-T19, T28-T29, T37-T38)
-- RSA codec tests (T05, T10, T15, T20)
-- Multi-channel negotiation tests (T41-T44)
+- Phase 1: `P1-T{ID}-{channel}-{codec}`
+- Phase 2: `P2-T{ID}-{channel}-chain2-{codec1}-{codec2}`
+- Phase 3: `P3-T{ID}-{channel}-chain3-{codec1}-{codec2}-{codec3}`
+
+Example:
+- `P1-T01-tcp-base64` - Phase 1, Test 01, TCP channel, base64 codec
+- `P2-T16-quic-chain2-aes-chacha20` - Phase 2, Test 16, QUIC channel, aes→chacha20 chain
+- `P3-T12-quic-chain3-base64-aes-chacha20` - Phase 3, Test 12, QUIC channel, triple chain
