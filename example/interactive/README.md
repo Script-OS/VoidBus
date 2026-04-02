@@ -194,6 +194,54 @@ Example: Base64 codec only → `00000010` (bit 1 set)
 | `bus.SendWithContext(ctx, data)` | Send data with timeout |
 | `bus.Stop()` | Stop and cleanup |
 
+## Graceful Shutdown
+
+Both client and server implement graceful shutdown using **context + WaitGroup** pattern:
+
+### Shutdown Mechanism
+
+1. **Signal Handler**: Listen for `SIGINT` (Ctrl+C) and `SIGTERM` signals
+2. **Context Propagation**: All goroutines monitor `ctx.Done()` channel
+3. **WaitGroup Coordination**: Main goroutine waits for all worker goroutines to finish
+4. **Resource Cleanup**: Connections, listeners, and bus are properly closed
+
+### Shutdown Flow
+
+```
+User presses Ctrl+C
+    ↓
+Signal handler receives SIGINT
+    ↓
+Call cancel() to cancel context
+    ↓
+All goroutines receive ctx.Done() signal
+    ↓
+Close connections (unblock pending reads/writes)
+    ↓
+WaitGroup.Wait() waits for goroutines to exit
+    ↓
+Clean up resources (listeners, bus)
+    ↓
+Program exits gracefully
+```
+
+### Key Components
+
+| Component | Purpose |
+|-----------|---------|
+| `context.WithCancel` | Create cancellable context for graceful shutdown |
+| `select { case <-ctx.Done(): }` | Goroutine exit signal detection |
+| `sync.WaitGroup` | Wait for all goroutines to finish |
+| `defer conn.Close()` | Ensure connections are closed |
+| `defer wg.Done()` | Mark goroutine completion |
+
+### Benefits
+
+- **No goroutine leaks**: All goroutines properly exit
+- **Clean resource release**: Connections, listeners closed before exit
+- **Predictable shutdown**: Ordered cleanup prevents race conditions
+- **Ctrl+C responsive**: Immediate response to interrupt signal
+
 ## Limitations
 
 Based on current VoidBus API, the following information is **not displayed**:

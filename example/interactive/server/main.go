@@ -11,6 +11,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -104,34 +105,54 @@ func main() {
 	var clientsMu sync.RWMutex
 	var clientCount int
 
+	// Create context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+
 	// Accept clients in background (using standard net.Listener Accept)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
-			// Accept returns net.Conn (standard Go interface)
-			conn, err := listener.Accept()
-			if err != nil {
-				// Listener closed
+			select {
+			case <-ctx.Done():
 				return
+			default:
+				// Accept returns net.Conn (standard Go interface)
+				conn, err := listener.Accept()
+				if err != nil {
+					// Check if context is cancelled (shutdown signal)
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						// Listener error, continue trying
+						continue
+					}
+				}
+
+				// Generate client ID
+				clientsMu.Lock()
+				clientCount++
+				clientID := fmt.Sprintf("client-%03d", clientCount)
+				clientsMu.Unlock()
+
+				fmt.Printf("🔗 New client connected: %s (RemoteAddr: %s)\n", clientID, conn.RemoteAddr().String())
+
+				// Register client
+				sess := &ClientSession{
+					ID:   clientID,
+					Conn: conn,
+				}
+
+				clientsMu.Lock()
+				clients[clientID] = sess
+				clientsMu.Unlock()
+
+				// Handle client in separate goroutine
+				wg.Add(1)
+				go handleClient(ctx, &wg, clientID, conn, &clients, &clientsMu)
 			}
-
-			// Generate client ID
-			clientCount++
-			clientID := fmt.Sprintf("client-%03d", clientCount)
-
-			fmt.Printf("🔗 New client connected: %s (RemoteAddr: %s)\n", clientID, conn.RemoteAddr().String())
-
-			// Register client
-			sess := &ClientSession{
-				ID:   clientID,
-				Conn: conn,
-			}
-
-			clientsMu.Lock()
-			clients[clientID] = sess
-			clientsMu.Unlock()
-
-			// Handle client in separate goroutine
-			go handleClient(clientID, conn, &clients, &clientsMu)
 		}
 	}()
 
@@ -149,66 +170,73 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 
 	// Input loop
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
-			fmt.Print("> ")
-			input, err := reader.ReadString('\n')
-			if err != nil {
-				if err.Error() == "EOF" {
-					fmt.Println("\nExiting...")
-					sigChan <- syscall.SIGTERM
-					return
-				}
-				continue
-			}
-
-			input = strings.TrimSpace(input)
-			if input == "" {
-				continue
-			}
-
-			// Parse command
-			parts := strings.SplitN(input, " ", 2)
-			cmd := parts[0]
-
-			switch cmd {
-			case "quit", "exit":
-				fmt.Println("Exiting...")
-				sigChan <- syscall.SIGTERM
+			select {
+			case <-ctx.Done():
 				return
-
-			case "list":
-				clientsMu.RLock()
-				fmt.Printf("\n📋 Connected clients (%d):\n", len(clients))
-				for id, sess := range clients {
-					fmt.Printf("   - %s (messages: %d, addr: %s)\n", id, sess.Messages, sess.Conn.RemoteAddr().String())
-				}
-				if len(clients) == 0 {
-					fmt.Println("   (no clients connected)")
-				}
-				clientsMu.RUnlock()
-				fmt.Println()
-
 			default:
-				// Send message
-				if len(parts) == 1 {
-					// Broadcast to all clients
-					broadcastMessage(&clients, &clientsMu, input)
-				} else {
-					// Send to specific client
-					targetClient := parts[0]
-					message := parts[1]
-
-					clientsMu.RLock()
-					sess, ok := clients[targetClient]
-					clientsMu.RUnlock()
-
-					if !ok {
-						fmt.Printf("❌ Client '%s' not found\n", targetClient)
-						continue
+				fmt.Print("> ")
+				input, err := reader.ReadString('\n')
+				if err != nil {
+					if err.Error() == "EOF" {
+						fmt.Println("\nExiting...")
+						cancel()
+						return
 					}
+					continue
+				}
 
-					sendToClient(sess, message)
+				input = strings.TrimSpace(input)
+				if input == "" {
+					continue
+				}
+
+				// Parse command
+				parts := strings.SplitN(input, " ", 2)
+				cmd := parts[0]
+
+				switch cmd {
+				case "quit", "exit":
+					fmt.Println("Exiting...")
+					cancel()
+					return
+
+				case "list":
+					clientsMu.RLock()
+					fmt.Printf("\n📋 Connected clients (%d):\n", len(clients))
+					for id, sess := range clients {
+						fmt.Printf("   - %s (messages: %d, addr: %s)\n", id, sess.Messages, sess.Conn.RemoteAddr().String())
+					}
+					if len(clients) == 0 {
+						fmt.Println("   (no clients connected)")
+					}
+					clientsMu.RUnlock()
+					fmt.Println()
+
+				default:
+					// Send message
+					if len(parts) == 1 {
+						// Broadcast to all clients
+						broadcastMessage(&clients, &clientsMu, input)
+					} else {
+						// Send to specific client
+						targetClient := parts[0]
+						message := parts[1]
+
+						clientsMu.RLock()
+						sess, ok := clients[targetClient]
+						clientsMu.RUnlock()
+
+						if !ok {
+							fmt.Printf("❌ Client '%s' not found\n", targetClient)
+							continue
+						}
+
+						sendToClient(sess, message)
+					}
 				}
 			}
 		}
@@ -220,6 +248,9 @@ func main() {
 	fmt.Println("═════════════════════════════════════════════════════════════")
 	fmt.Println("Shutting down...")
 
+	// Cancel context to notify all goroutines
+	cancel()
+
 	// Close all client connections
 	clientsMu.Lock()
 	for _, sess := range clients {
@@ -230,6 +261,9 @@ func main() {
 	// Close listener
 	listener.Close()
 
+	// Wait for all goroutines to finish
+	wg.Wait()
+
 	// Stop bus
 	bus.Stop()
 
@@ -238,11 +272,14 @@ func main() {
 
 // handleClient handles a connected client session using standard net.Conn.
 func handleClient(
+	ctx context.Context,
+	wg *sync.WaitGroup,
 	clientID string,
 	conn net.Conn,
 	clients *map[string]*ClientSession,
 	clientsMu *sync.RWMutex,
 ) {
+	defer wg.Done()
 	defer func() {
 		conn.Close()
 		clientsMu.Lock()
@@ -254,40 +291,51 @@ func handleClient(
 	buf := make([]byte, 64*1024) // 64KB buffer for complete message
 
 	for {
-		// Set read deadline for polling
-		conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-
-		n, err := conn.Read(buf)
-		if err != nil {
-			if netErr, ok := err.(*net.OpError); ok && netErr.Timeout() {
-				// Timeout is expected for polling
-				continue
-			}
-			if err == io.EOF {
-				fmt.Printf("\n🔴 [%s] Client closed connection\n", clientID)
-				return
-			}
-			fmt.Printf("\n❌ [%s] Read error: %v\n", clientID, err)
+		select {
+		case <-ctx.Done():
 			return
+		default:
+			// Set read deadline for polling
+			conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+
+			n, err := conn.Read(buf)
+			if err != nil {
+				if netErr, ok := err.(*net.OpError); ok && netErr.Timeout() {
+					// Timeout is expected for polling
+					continue
+				}
+				if err == io.EOF {
+					fmt.Printf("\n🔴 [%s] Client closed connection\n", clientID)
+					return
+				}
+				// Check if context is cancelled (shutdown signal)
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					fmt.Printf("\n❌ [%s] Read error: %v\n", clientID, err)
+					return
+				}
+			}
+
+			// Update message count
+			clientsMu.RLock()
+			sess, ok := (*clients)[clientID]
+			clientsMu.RUnlock()
+			if ok {
+				sess.Messages++
+			}
+
+			data := make([]byte, n)
+			copy(data, buf[:n])
+
+			fmt.Printf("\n📨 [%s] Received: %s (%d bytes)\n", clientID, string(data), n)
+			fmt.Print("> ")
+
+			// Echo back to client
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			conn.Write([]byte("Echo: " + string(data)))
 		}
-
-		// Update message count
-		clientsMu.RLock()
-		sess, ok := (*clients)[clientID]
-		clientsMu.RUnlock()
-		if ok {
-			sess.Messages++
-		}
-
-		data := make([]byte, n)
-		copy(data, buf[:n])
-
-		fmt.Printf("\n📨 [%s] Received: %s (%d bytes)\n", clientID, string(data), n)
-		fmt.Print("> ")
-
-		// Echo back to client
-		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		conn.Write([]byte("Echo: " + string(data)))
 	}
 }
 

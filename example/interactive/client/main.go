@@ -10,6 +10,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -96,6 +97,10 @@ func main() {
 	fmt.Println("═════════════════════════════════════════════════════════════")
 	fmt.Println()
 
+	// Create context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+
 	// Setup signal handler for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -103,37 +108,51 @@ func main() {
 	// Receive goroutine (using standard net.Conn Read)
 	var receivedCount int
 	var mu sync.Mutex
-	receiveDone := make(chan struct{})
 
+	wg.Add(1)
 	go func() {
-		defer close(receiveDone)
+		defer wg.Done()
+		defer cancel() // Ensure context is cancelled if receive loop exits
+
 		buf := make([]byte, 64*1024) // 64KB buffer for complete message
 		for {
-			// Set read deadline
-			conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			select {
+			case <-ctx.Done():
+				fmt.Println("\n🛑 Receive loop stopped")
+				return
+			default:
+				// Set read deadline for polling
+				conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 
-			n, err := conn.Read(buf)
-			if err != nil {
-				if netErr, ok := err.(*net.OpError); ok && netErr.Timeout() {
-					// Timeout is expected for polling
-					continue
+				n, err := conn.Read(buf)
+				if err != nil {
+					if netErr, ok := err.(*net.OpError); ok && netErr.Timeout() {
+						// Timeout is expected for polling
+						continue
+					}
+					if err == io.EOF {
+						fmt.Println("\n🔴 Server closed connection")
+						return
+					}
+					// Check if context is cancelled (exit signal)
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						continue
+					}
 				}
-				if err == io.EOF {
-					fmt.Println("\n🔴 Server closed connection")
-					return
-				}
-				continue
+
+				mu.Lock()
+				receivedCount++
+				count := receivedCount
+				mu.Unlock()
+
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				fmt.Printf("\n📨 [MSG #%d] Received: %s (%d bytes)\n", count, string(data), n)
+				fmt.Print("> ")
 			}
-
-			mu.Lock()
-			receivedCount++
-			count := receivedCount
-			mu.Unlock()
-
-			data := make([]byte, n)
-			copy(data, buf[:n])
-			fmt.Printf("\n📨 [MSG #%d] Received: %s (%d bytes)\n", count, string(data), n)
-			fmt.Print("> ")
 		}
 	}()
 
@@ -142,40 +161,52 @@ func main() {
 	var sendCount int
 
 	// Input loop
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+
 		for {
-			fmt.Print("> ")
-			input, err := reader.ReadString('\n')
-			if err != nil {
-				if err.Error() == "EOF" {
-					fmt.Println("\nExiting...")
-					sigChan <- syscall.SIGTERM
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				fmt.Print("> ")
+				input, err := reader.ReadString('\n')
+				if err != nil {
+					if err.Error() == "EOF" {
+						fmt.Println("\nExiting...")
+						cancel()
+						return
+					}
+					continue
+				}
+
+				input = strings.TrimSpace(input)
+				if input == "" {
+					continue
+				}
+
+				if input == "quit" || input == "exit" {
+					fmt.Println("Exiting...")
+					cancel()
 					return
 				}
-				continue
-			}
 
-			input = strings.TrimSpace(input)
-			if input == "" {
-				continue
-			}
+				// Send message using standard net.Conn Write
+				mu.Lock()
+				sendCount++
+				count := sendCount
+				mu.Unlock()
 
-			if input == "quit" || input == "exit" {
-				fmt.Println("Exiting...")
-				sigChan <- syscall.SIGTERM
-				return
-			}
+				fmt.Printf("📤 [MSG #%d] Sending: %s (%d bytes)...\n", count, input, len(input))
 
-			// Send message using standard net.Conn Write
-			sendCount++
-			fmt.Printf("📤 [MSG #%d] Sending: %s (%d bytes)...\n", sendCount, input, len(input))
-
-			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			n, err := conn.Write([]byte(input))
-			if err != nil {
-				fmt.Printf("   ❌ Send failed: %v\n", err)
-			} else {
-				fmt.Printf("   ✓ Sent %d bytes successfully\n", n)
+				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				n, err := conn.Write([]byte(input))
+				if err != nil {
+					fmt.Printf("   ❌ Send failed: %v\n", err)
+				} else {
+					fmt.Printf("   ✓ Sent %d bytes successfully\n", n)
+				}
 			}
 		}
 	}()
@@ -186,12 +217,22 @@ func main() {
 	fmt.Println("═════════════════════════════════════════════════════════════")
 	fmt.Println("Shutting down...")
 
-	// Close connection
+	// Cancel context to notify all goroutines
+	cancel()
+
+	// Close connection to unblock any pending reads/writes
 	conn.Close()
+
+	// Wait for all goroutines to finish
+	wg.Wait()
 
 	// Stop bus
 	bus.Stop()
 
 	fmt.Println("✓ Client stopped")
-	fmt.Printf("Stats: Sent %d messages, Received %d messages\n", sendCount, receivedCount)
+	mu.Lock()
+	send := sendCount
+	recv := receivedCount
+	mu.Unlock()
+	fmt.Printf("Stats: Sent %d messages, Received %d messages\n", send, recv)
 }
