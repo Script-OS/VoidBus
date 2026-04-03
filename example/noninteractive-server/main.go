@@ -182,8 +182,10 @@ func main() {
 	conn.SetWriteDeadline(time.Now().Add(5 * time.Minute))
 
 	// Send file content in chunks with progress logging
+	// Use larger chunks (512KB) to reduce number of messages
+	// VoidBus will handle fragmentation internally
 	startTime = time.Now()
-	buf := make([]byte, 64*1024) // 64KB chunks
+	buf := make([]byte, 512*1024) // 512KB chunks
 	totalSent := int64(0)
 
 	for totalSent < sendFileSize {
@@ -200,7 +202,7 @@ func main() {
 
 		wrote, err := conn.Write(buf[:n])
 		if err != nil {
-			log.Fatalf("Failed to send file chunk: %v", err)
+			log.Fatalf("Failed to send file chunk at offset %d: %v", totalSent, err)
 		}
 		totalSent += int64(wrote)
 

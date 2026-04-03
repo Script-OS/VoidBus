@@ -206,18 +206,39 @@ func main() {
 	defer receivedFile.Close()
 
 	hasher := sha256.New()
-	multiWriter := io.MultiWriter(receivedFile, hasher)
+
+	// Use large buffer for VoidBus message-oriented reads
+	// Each Read() returns a complete message, which could be large
+	buf := make([]byte, 1024*1024) // 1MB buffer
+	totalReceived := int64(0)
 
 	startTime = time.Now()
-	received, err := io.CopyN(multiWriter, conn, fileSize)
-	if err != nil {
-		log.Fatalf("Failed to receive file: %v", err)
+	for totalReceived < fileSize {
+		n, err := conn.Read(buf)
+		if err != nil {
+			log.Fatalf("Failed to receive file: %v", err)
+		}
+
+		// Write to file and hasher
+		if _, err := receivedFile.Write(buf[:n]); err != nil {
+			log.Fatalf("Failed to write to file: %v", err)
+		}
+		hasher.Write(buf[:n])
+		totalReceived += int64(n)
+
+		// Log progress every 1MB
+		if totalReceived%(1024*1024) == 0 {
+			elapsed := time.Since(startTime)
+			rate := float64(totalReceived) / 1024 / 1024 / elapsed.Seconds()
+			log.Printf("Progress: %d/%d bytes (%.1f%%, %.2f MB/s)",
+				totalReceived, fileSize, float64(totalReceived)/float64(fileSize)*100, rate)
+		}
 	}
 	recvDuration := time.Since(startTime)
 
 	receivedHash := hex.EncodeToString(hasher.Sum(nil))
 
-	log.Printf("File received: %d bytes in %v (%.2f MB/s)", received, recvDuration, float64(received)/1024/1024/recvDuration.Seconds())
+	log.Printf("File received: %d bytes in %v (%.2f MB/s)", totalReceived, recvDuration, float64(totalReceived)/1024/1024/recvDuration.Seconds())
 
 	// Get server's send info
 	if vconn, ok := conn.(interface{ GetLastSendInfo() *voidbus.SendInfo }); ok {
