@@ -215,6 +215,117 @@ func (m *FragmentManager) CleanupExpired() int {
 
 ---
 
+## 5. 状态转换的锁使用原则（v3.0）
+
+VoidBus v3.0 使用单一状态枚举管理 Bus 状态，状态转换遵循明确的锁使用原则。
+
+### 5.1 状态枚举定义
+
+```go
+type BusState int32
+
+const (
+    StateIdle BusState = iota        // 初始状态
+    StateConnected BusState = iota   // 已连接，未协商
+    StateNegotiated BusState = iota  // 已协商，准备通信
+    StateRunning BusState = iota     // 运行中
+    StateClosed BusState = iota      // 已关闭
+)
+```
+
+### 5.2 状态转换锁原则
+
+**原则**: 状态转换方法 `setState()` 已持有 `b.mu` 锁，避免双重加锁。
+
+**正确示例**:
+```go
+// 状态转换方法（已持锁）
+func (b *Bus) setState(newState BusState) error {
+    b.mu.Lock()
+    defer b.mu.Unlock()
+    
+    currentState := BusState(b.state.Load())
+    
+    // 状态转换验证
+    switch currentState {
+    case StateIdle:
+        if newState != StateConnected && newState != StateRunning {
+            return ErrInvalidStateTransition
+        }
+    ...
+    }
+    
+    b.state.Store(int32(newState))
+    return nil
+}
+
+// 外部调用（不持锁）
+func (b *Bus) Dial(ch Channel) (net.Conn, error) {
+    // 先进行其他操作（不持锁）
+    ...
+    
+    // 状态转换时才持锁（setState 内部持锁）
+    if err := b.setState(StateConnected); err != nil {
+        return nil, err
+    }
+    
+    ...
+}
+```
+
+**错误示例**:
+```go
+// 错误：双重加锁
+func (b *Bus) Dial(ch Channel) (net.Conn, error) {
+    b.mu.Lock()
+    defer b.mu.Unlock()  // 外部已持锁
+    
+    // setState 内部又会持锁 → 死锁！
+    if err := b.setState(StateConnected); err != nil {
+        return nil, err
+    }
+}
+```
+
+### 5.3 状态查询的锁原则
+
+**原则**: 状态查询使用 atomic 操作，无需加锁。
+
+**正确示例**:
+```go
+// 状态查询（无锁）
+func (b *Bus) getState() BusState {
+    return BusState(b.state.Load())
+}
+
+func (b *Bus) isRunning() bool {
+    return b.getState() == StateRunning
+}
+
+// 外部快速检查（无锁）
+func (b *Bus) Send(data []byte) error {
+    if !b.isRunning() {
+        return ErrBusNotRunning
+    }
+    
+    // 继续发送逻辑...
+}
+```
+
+### 5.4 状态转换验证
+
+状态转换必须通过验证规则，防止非法转换：
+
+| 当前状态 | 允许的目标状态 | 禁止的转换 |
+|---------|---------------|-----------|
+| StateIdle | StateConnected, StateRunning | StateNegotiated, StateClosed |
+| StateConnected | StateNegotiated, StateClosed | StateIdle, StateRunning |
+| StateNegotiated | StateRunning, StateClosed | StateIdle, StateConnected |
+| StateRunning | StateClosed | 所有其他状态 |
+| StateClosed | 无（禁止） | 所有状态 |
+
+---
+
 ## 参考资料
 
 - Go并发编程：https://go.dev/blog/pipelines
@@ -224,4 +335,4 @@ func (m *FragmentManager) CleanupExpired() int {
 ---
 
 *文档维护：每次锁相关修复后更新此文档*
-*最后更新：2026-04-02*
+*最后更新：2026-04-03*

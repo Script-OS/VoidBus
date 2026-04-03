@@ -1568,3 +1568,101 @@ func (c *DefaultChain) SecurityLevel() SecurityLevel {
 - Version 字段用于识别协议版本
 - v2.x 可通过 Version=1 降级兼容
 - 不兼容变更需主版本号升级
+
+---
+
+## 15. Module 接口类型安全约束（v3.0）
+
+VoidBus v3.0 优化 Module 接口定义，确保类型安全。
+
+### 15.1 类型安全原则
+
+Module 接口（CodecModule、ChannelModule、FragmentModule、SessionModule）遵循以下原则：
+
+- **类型明确**: 所有参数和返回值使用具体类型，避免 `interface{}`
+- **编译时检查**: 类型错误在编译时发现，而非运行时类型断言
+- **向后兼容**: 保持接口语义不变，仅替换类型定义
+
+### 15.2 CodecModule 接口改进
+
+**改进前**（使用 interface{}）：
+```go
+type CodecModule interface {
+    Module
+    
+    AddCodec(codec interface{}, code string) error
+    RandomSelect() (codes []string, chain interface{}, err error)
+    MatchByHash(hash [32]byte) (codes []string, chain interface{}, err error)
+}
+```
+
+**改进后**（类型安全）：
+```go
+type CodecModule interface {
+    Module
+    
+    // 明确类型参数：Codec 接口而非 interface{}
+    AddCodec(codec codec.Codec, code string) error
+    
+    // 明确返回类型：CodecChain 接口而非 interface{}
+    RandomSelect() (codes []string, chain codec.CodecChain, err error)
+    MatchByHash(hash [32]byte) (codes []string, chain codec.CodecChain, err error)
+}
+```
+
+### 15.3 ChannelModule 接口改进
+
+**改进前**（使用 interface{}）：
+```go
+type ChannelModule interface {
+    Module
+    
+    AddChannel(channel interface{}, id string) error
+    RandomSelect() (interface{}, error)
+    SelectHealthy() (interface{}, error)
+}
+```
+
+**改进后**（类型安全）：
+```go
+type ChannelModule interface {
+    Module
+    
+    // 明确类型参数：Channel 接口而非 interface{}
+    AddChannel(channel channel.Channel, id string) error
+    
+    // 明确返回类型：Channel 接口而非 interface{}
+    RandomSelect() (channel.Channel, error)
+    SelectHealthy() (channel.Channel, error)
+}
+```
+
+### 15.4 FragmentModule 和 SessionModule 改进
+
+类似的改进应用于 FragmentModule 和 SessionModule：
+
+- FragmentModule: 所有 `interface{}` 参数替换为 `fragment.Buffer` 等具体类型
+- SessionModule: 所有 `interface{}` 参数替换为 `session.Session` 等具体类型
+
+### 15.5 类型安全收益
+
+| 方面 | 改进前 | 改进后 |
+|------|--------|--------|
+| 类型错误发现 | 运行时（类型断言） | 编译时 |
+| IDE 支持 | 无类型推断 | 完整类型推断 |
+| 代码维护 | 类型断言代码 | 无类型断言 |
+| 性能 | 类型断言开销 | 无开销 |
+
+### 15.6 Module 接口实现状态
+
+| 接口 | 实现文件 | 状态 | 类型安全 |
+|------|----------|------|----------|
+| Module | module.go | ✅ 已实现 | 🔄 待改进（替换 interface{}） |
+| CodecModule | module.go | ✅ 已定义 | 🔄 待改进 |
+| ChannelModule | module.go | ✅ 已定义 | 🔄 待改进 |
+| FragmentModule | module.go | ✅ 已定义 | 🔄 待改进 |
+| SessionModule | module.go | ✅ 已定义 | 🔄 待改进 |
+
+---
+
+*最后更新：2026-04-03*

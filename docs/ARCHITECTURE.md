@@ -830,3 +830,252 @@ func IsCritical(err error) bool
 // 检查是否为高严重程度
 func IsHighSeverity(err error) bool
 ```
+
+---
+
+## 14. 状态管理设计（v3.0改进）
+
+VoidBus v3.0 采用单一状态枚举代替多个布尔标志，简化状态管理并确保状态转换清晰。
+
+### 14.1 状态枚举定义
+
+```go
+// BusState 定义 Bus 的生命周期状态
+type BusState int32  // 使用 int32 支持 atomic 操作
+
+const (
+    StateIdle BusState = iota        // 初始状态，未使用
+    StateConnected BusState = iota   // 已连接，未协商
+    StateNegotiated BusState = iota  // 已协商，准备通信
+    StateRunning BusState = iota     // 运行中（接收循环已启动）
+    StateClosed BusState = iota      // 已关闭
+)
+```
+
+### 14.2 状态转换规则
+
+状态转换遵循严格的生命周期路径，防止非法状态转换：
+
+```
+客户端模式:
+StateIdle → StateConnected → StateNegotiated → StateRunning → StateClosed
+
+服务端模式:
+StateIdle → StateRunning → (Accept 创建 clientBus in StateConnected)
+```
+
+**状态转换验证表**：
+
+| 当前状态 | 允许的下一状态 | 禁止的转换 |
+|---------|---------------|-----------|
+| StateIdle | StateConnected, StateRunning | StateNegotiated, StateClosed |
+| StateConnected | StateNegotiated, StateClosed | StateIdle, StateRunning |
+| StateNegotiated | StateRunning, StateClosed | StateIdle, StateConnected |
+| StateRunning | StateClosed | 所有其他状态 |
+| StateClosed | 无（禁止转换） | 所有状态 |
+
+### 14.3 状态管理实现
+
+```go
+// Bus 结构体改进
+type Bus struct {
+    state atomic.Int32  // 单一状态变量（代替三个 atomic.Bool）
+    
+    // 其他字段不变
+    mu     sync.RWMutex
+    config *BusConfig
+    ...
+}
+
+// 状态转换方法（明确、原子性、带验证）
+func (b *Bus) setState(newState BusState) error {
+    b.mu.Lock()
+    defer b.mu.Unlock()
+    
+    currentState := BusState(b.state.Load())
+    
+    // 状态转换验证（防止非法转换）
+    switch currentState {
+    case StateIdle:
+        if newState != StateConnected && newState != StateRunning {
+            return ErrInvalidStateTransition
+        }
+    case StateConnected:
+        if newState != StateNegotiated && newState != StateClosed {
+            return ErrInvalidStateTransition
+        }
+    case StateNegotiated:
+        if newState != StateRunning && newState != StateClosed {
+            return ErrInvalidStateTransition
+        }
+    case StateRunning:
+        if newState != StateClosed {
+            return ErrInvalidStateTransition
+        }
+    case StateClosed:
+        return ErrBusClosed  // 已关闭，无法转换
+    }
+    
+    b.state.Store(int32(newState))
+    return nil
+}
+
+// 状态查询方法（快速、明确）
+func (b *Bus) getState() BusState {
+    return BusState(b.state.Load())
+}
+
+func (b *Bus) isRunning() bool {
+    return b.getState() == StateRunning
+}
+
+func (b *Bus) isNegotiated() bool {
+    return b.getState() >= StateNegotiated
+}
+
+func (b *Bus) isClosed() bool {
+    return b.getState() == StateClosed
+}
+```
+
+### 14.4 状态转换在流程中的应用
+
+**客户端 Dial 流程**：
+```
+bus.Dial(ch)
+    │
+    ├── 1. setState(StateConnected)
+    ├── 2. Send NegotiateRequest
+    ├── 3. Receive NegotiateResponse
+    ├── 4. setState(StateNegotiated)
+    ├── 5. StartReceiveLoop
+    ├── 6. setState(StateRunning)
+    └── 7. Return net.Conn
+```
+
+**服务端 Listen/Accept 流程**：
+```
+bus.Listen(serverCh)
+    │
+    ├── 1. setState(StateRunning)  // 服务端标记为运行
+    └── 2. Return net.Listener
+
+listener.Accept()
+    │
+    ├── 1. Accept new client connection
+    ├── 2. Receive NegotiateRequest
+    ├── 3. HandleNegotiateRequest
+    ├── 4. Create clientBus (初始状态: StateConnected)
+    ├── 5. Send NegotiateResponse
+    ├── 6. clientBus.setState(StateNegotiated)
+    ├── 7. Start clientBus receive loop
+    ├── 8. clientBus.setState(StateRunning)
+    └── 9. Return net.Conn (for this client)
+```
+
+---
+
+## 15. Module 接口类型安全（v3.0改进）
+
+VoidBus v3.0 优化 Module 接口定义，将 `interface{}` 参数替换为明确的具体类型，确保编译时类型检查。
+
+### 15.1 改进原则
+
+- **类型安全**: 所有接口参数和返回值使用具体类型，避免运行时类型断言
+- **编译时检查**: 类型错误在编译时发现，而非运行时
+- **向后兼容**: 接口语义不变，仅替换类型定义
+
+### 15.2 CodecModule 接口改进
+
+**改进前**（使用 interface{}）：
+```go
+type CodecModule interface {
+    Module
+    
+    AddCodec(codec interface{}, code string) error
+    RandomSelect() (codes []string, chain interface{}, err error)
+    MatchByHash(hash [32]byte) (codes []string, chain interface{}, err error)
+}
+```
+
+**改进后**（使用具体类型）：
+```go
+type CodecModule interface {
+    Module
+    
+    // 明确类型参数：Codec 接口而非 interface{}
+    AddCodec(codec codec.Codec, code string) error
+    
+    // 明确返回类型：CodecChain 接口而非 interface{}
+    RandomSelect() (codes []string, chain codec.CodecChain, err error)
+    MatchByHash(hash [32]byte) (codes []string, chain codec.CodecChain, err error)
+}
+```
+
+### 15.3 ChannelModule 接口改进
+
+**改进前**：
+```go
+type ChannelModule interface {
+    Module
+    
+    AddChannel(channel interface{}, id string) error
+    RandomSelect() (interface{}, error)
+    SelectHealthy() (interface{}, error)
+}
+```
+
+**改进后**：
+```go
+type ChannelModule interface {
+    Module
+    
+    // 明确类型参数：Channel 接口而非 interface{}
+    AddChannel(channel channel.Channel, id string) error
+    
+    // 明确返回类型：Channel 接口而非 interface{}
+    RandomSelect() (channel.Channel, error)
+    SelectHealthy() (channel.Channel, error)
+}
+```
+
+### 15.4 FragmentModule 和 SessionModule 改进
+
+类似的改进应用于 FragmentModule 和 SessionModule，所有 `interface{}` 参数替换为具体类型（fragment.Buffer、session.Session 等）。
+
+### 15.5 类型安全收益
+
+| 方面 | 改进前 | 改进后 |
+|------|--------|--------|
+| 类型检查 | 运行时断言 | 编译时检查 |
+| 错误发现 | 运行时 panic | 编译时错误 |
+| IDE 支持 | 无法推断类型 | 完整类型推断 |
+| 维护成本 | 类型断言代码 | 无额外代码 |
+
+---
+
+## 16. 未采纳的改进方案
+
+以下改进方案经过架构分析，但决定暂不实施或不需要实施：
+
+### 16.1 goroutine 数量限制
+
+**分析结论**: 不需要限制 goroutine 数量，依赖 Go runtime 的调度器管理。
+
+**理由**:
+- Go runtime 已经高效管理 goroutine
+- VoidBus 的 goroutine 创建场景有限（接收循环、清理任务）
+- 添加限制增加复杂性，不符合"简洁优先"原则
+
+### 16.2 NAK batching 优化
+
+**分析结论**: 保持现有 NAK batching 实现，暂不改动。
+
+**理由**:
+- NAK batching 在某些场景下减少网络包数量
+- 需要更多性能数据验证延迟影响
+- 当前实现稳定，暂不优化
+
+---
+
+*最后更新：2026-04-03*
