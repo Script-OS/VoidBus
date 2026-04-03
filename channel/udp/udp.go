@@ -371,8 +371,9 @@ func (c *ClientChannel) Type() channel.ChannelType {
 
 // DefaultMTU implements channel.Channel.DefaultMTU.
 // UDP MTU is typically 1472 bytes (1500 - 20 IP - 8 UDP).
+// But we limit to MaxUDPPacketSize - HeaderSize to account for UDP frame overhead.
 func (c *ClientChannel) DefaultMTU() int {
-	return 1472
+	return MaxUDPPacketSize - HeaderSize // 1395 bytes
 }
 
 // IsReliable implements channel.Channel.IsReliable.
@@ -803,8 +804,9 @@ func (a *AcceptedChannel) Type() channel.ChannelType {
 }
 
 // DefaultMTU implements channel.Channel.DefaultMTU.
+// UDP MTU is limited by MaxUDPPacketSize minus UDP frame header overhead.
 func (a *AcceptedChannel) DefaultMTU() int {
-	return 1472
+	return MaxUDPPacketSize - HeaderSize // 1395 bytes
 }
 
 // IsReliable implements channel.Channel.IsReliable.

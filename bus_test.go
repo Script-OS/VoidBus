@@ -5,14 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Script-OS/VoidBus/codec"
 	"github.com/Script-OS/VoidBus/codec/plain"
 )
 
 // === New and NewWithConfig Tests ===
 
 func TestNew(t *testing.T) {
-	bus, err := New()
+	bus, err := New(nil)
 	if err != nil {
 		t.Fatalf("expected New() to succeed, got error: %v", err)
 	}
@@ -28,9 +27,9 @@ func TestNew(t *testing.T) {
 
 func TestNewWithConfig_Valid(t *testing.T) {
 	config := DefaultBusConfig()
-	bus, err := NewWithConfig(config)
+	bus, err := New(config)
 	if err != nil {
-		t.Fatalf("expected NewWithConfig() to succeed, got error: %v", err)
+		t.Fatalf("expected New(config) to succeed, got error: %v", err)
 	}
 
 	if bus == nil {
@@ -42,7 +41,7 @@ func TestNewWithConfig_InvalidMaxCodecDepth(t *testing.T) {
 	config := DefaultBusConfig()
 	config.MaxCodecDepth = 0 // Invalid
 
-	_, err := NewWithConfig(config)
+	_, err := New(config)
 	if err == nil {
 		t.Fatal("expected error for invalid MaxCodecDepth")
 	}
@@ -58,7 +57,7 @@ func TestNewWithConfig_InvalidMTU(t *testing.T) {
 	config := DefaultBusConfig()
 	config.DefaultMTU = 10 // Less than MinMTU
 
-	_, err := NewWithConfig(config)
+	_, err := New(config)
 	if err == nil {
 		t.Fatal("expected error for invalid MTU")
 	}
@@ -68,7 +67,7 @@ func TestNewWithConfig_InvalidTimeout(t *testing.T) {
 	config := DefaultBusConfig()
 	config.FragmentTimeout = 0 // Invalid
 
-	_, err := NewWithConfig(config)
+	_, err := New(config)
 	if err == nil {
 		t.Fatal("expected error for invalid FragmentTimeout")
 	}
@@ -77,7 +76,7 @@ func TestNewWithConfig_InvalidTimeout(t *testing.T) {
 // === SetKey Tests ===
 
 func TestSetKey_ValidKey(t *testing.T) {
-	bus, err := New()
+	bus, err := New(nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -95,7 +94,7 @@ func TestSetKey_ValidKey(t *testing.T) {
 }
 
 func TestSetKey_InvalidKey(t *testing.T) {
-	bus, err := New()
+	bus, err := New(nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -124,7 +123,7 @@ func TestSetKey_InvalidKey(t *testing.T) {
 }
 
 func TestSetKey_EmptyKey(t *testing.T) {
-	bus, err := New()
+	bus, err := New(nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -136,24 +135,22 @@ func TestSetKey_EmptyKey(t *testing.T) {
 }
 
 func TestSetKeyProvider(t *testing.T) {
-	bus, err := New()
+	bus, err := New(nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
 
-	// SetKeyProvider doesn't return error (direct assignment)
-	bus.SetKeyProvider(nil)
-
-	// This is valid - can set nil provider
-	if bus.keyProvider != nil {
-		t.Error("expected nil keyProvider")
+	// SetKey now accepts a byte slice directly
+	err = bus.SetKey(nil)
+	if err == nil {
+		t.Fatal("expected error for nil key")
 	}
 }
 
 // === Codec Tests ===
 
 func TestAddCodec(t *testing.T) {
-	bus, err := New()
+	bus, err := New(nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -177,7 +174,7 @@ func TestAddCodec(t *testing.T) {
 }
 
 func TestAddCodec_DuplicateCode(t *testing.T) {
-	bus, err := New()
+	bus, err := New(nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -198,7 +195,7 @@ func TestAddCodec_DuplicateCode(t *testing.T) {
 }
 
 func TestSetMaxCodecDepth(t *testing.T) {
-	bus, err := New()
+	bus, err := New(nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -214,7 +211,7 @@ func TestSetMaxCodecDepth(t *testing.T) {
 }
 
 func TestSetMaxCodecDepth_Invalid(t *testing.T) {
-	bus, err := New()
+	bus, err := New(nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -228,270 +225,30 @@ func TestSetMaxCodecDepth_Invalid(t *testing.T) {
 
 // === Validate Tests ===
 
-func TestValidate_NoCodec(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	err = bus.Validate()
-	if err == nil {
-		t.Fatal("expected error for no codec")
-	}
-
-	if !errors.Is(err, ErrCodecChainRequired) {
-		t.Errorf("expected ErrCodecChainRequired, got %v", err)
-	}
-}
-
-func TestValidate_NoChannel(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	// Add codec but no channel
-	plainCodec := plain.New()
-	bus.RegisterCodec(plainCodec)
-
-	err = bus.Validate()
-	if err == nil {
-		t.Fatal("expected error for no channel")
-	}
-
-	if !errors.Is(err, ErrChannelRequired) {
-		t.Errorf("expected ErrChannelRequired, got %v", err)
-	}
-}
-
-func TestValidate_Valid(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	// Add codec
-	plainCodec := plain.New()
-	bus.RegisterCodec(plainCodec)
-
-	// Add mock channel (we need a real channel implementation)
-	// For now, skip this test as it requires actual channel
-
-	// This test would pass if we had a channel
-	// err = bus.Validate()
-	// if err != nil {
-	//     t.Fatalf("expected Validate() to succeed: %v", err)
-	// }
-}
+// TestValidate_NoCodec - Validate method removed
+// TestValidate_NoChannel - Validate method removed
+// TestValidate_Valid - Validate method removed
 
 // === Stats Tests ===
-
-func TestStats(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	stats := bus.Stats()
-
-	if stats.Connected {
-		t.Error("expected Connected=false for new bus")
-	}
-
-	if stats.Negotiated {
-		t.Error("expected Negotiated=false for new bus")
-	}
-
-	if stats.Running {
-		t.Error("expected Running=false for new bus")
-	}
-
-	if stats.ChannelCount != 0 {
-		t.Errorf("expected ChannelCount=0, got %d", stats.ChannelCount)
-	}
-
-	if stats.CodecCount != 0 {
-		t.Errorf("expected CodecCount=0, got %d", stats.CodecCount)
-	}
-}
-
-func TestModuleStats(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	moduleStats := bus.ModuleStats()
-
-	// ModuleStats returns BusStats
-	stats, ok := moduleStats.(BusStats)
-	if !ok {
-		t.Errorf("expected BusStats type, got %T", moduleStats)
-	}
-
-	if stats.Connected {
-		t.Error("expected Connected=false")
-	}
-}
+// TestStats - Stats method removed
+// TestModuleStats - ModuleStats method removed
 
 // === Lifecycle Tests ===
-
-func TestBus_Name(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	if bus.Name() != "Bus" {
-		t.Errorf("expected Name='Bus', got '%s'", bus.Name())
-	}
-}
-
-func TestBus_IsRunning(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	if bus.IsRunning() {
-		t.Error("expected IsRunning=false for new bus")
-	}
-}
-
-func TestBus_IsConnected(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	if bus.IsConnected() {
-		t.Error("expected IsConnected=false for new bus")
-	}
-}
-
-func TestBus_GetConfig(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	config := bus.GetConfig()
-	if config == nil {
-		t.Fatal("expected non-nil config")
-	}
-
-	if config.MaxCodecDepth != 2 {
-		t.Errorf("expected MaxCodecDepth=2, got %d", config.MaxCodecDepth)
-	}
-}
+// TestBus_Name - Name method removed
+// TestBus_IsRunning - IsRunning method removed
+// TestBus_IsConnected - IsConnected method removed
+// TestBus_GetConfig - GetConfig method removed
 
 // === GetNegotiationInfo Tests ===
-
-func TestBus_GetNegotiationInfo(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	// Add codec
-	plainCodec := plain.New()
-	bus.RegisterCodec(plainCodec)
-
-	codes, depth := bus.GetNegotiationInfo()
-
-	if len(codes) != 1 {
-		t.Errorf("expected 1 code, got %d", len(codes))
-	}
-
-	// Depth should be MaxCodecDepth (default 5)
-	if depth != codec.MaxCodecDepth {
-		t.Errorf("expected depth=%d, got %d", codec.MaxCodecDepth, depth)
-	}
-}
+// TestBus_GetNegotiationInfo - GetNegotiationInfo method removed
 
 // === Connect Tests ===
-
-func TestBus_Connect(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	err = bus.Connect("localhost:8080")
-	if err != nil {
-		t.Fatalf("expected Connect() to succeed, got error: %v", err)
-	}
-
-	if !bus.IsConnected() {
-		t.Error("expected IsConnected=true after Connect()")
-	}
-}
-
-func TestBus_Connect_AlreadyConnected(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	// First connect
-	bus.Connect("localhost:8080")
-
-	// Second connect should fail
-	err = bus.Connect("localhost:8080")
-	if err == nil {
-		t.Fatal("expected error for already connected")
-	}
-
-	if !errors.Is(err, ErrBusAlreadyRunning) {
-		t.Errorf("expected ErrBusAlreadyRunning, got %v", err)
-	}
-}
+// TestBus_Connect - Connect method removed
+// TestBus_Connect_AlreadyConnected - Connect method removed
 
 // === Error Handler Tests ===
-
-func TestBus_OnMessage(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	handlerCalled := false
-	bus.OnMessage(func(data []byte) {
-		handlerCalled = true
-	})
-
-	if bus.messageHandler == nil {
-		t.Error("expected messageHandler to be set")
-	}
-
-	// Call handler
-	bus.messageHandler([]byte("test"))
-	if !handlerCalled {
-		t.Error("expected handler to be called")
-	}
-}
-
-func TestBus_OnError(t *testing.T) {
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	handlerCalled := false
-	bus.OnError(func(err error) {
-		handlerCalled = true
-	})
-
-	if bus.errorHandler == nil {
-		t.Error("expected errorHandler to be set")
-	}
-
-	// Call handler
-	bus.errorHandler(ErrChannelClosed)
-	if !handlerCalled {
-		t.Error("expected handler to be called")
-	}
-}
+// TestBus_OnMessage - OnMessage method removed
+// TestBus_OnError - OnError method removed
 
 // === Config Tests ===
 
@@ -594,102 +351,18 @@ func TestNegotiationConfig_Validate(t *testing.T) {
 }
 
 // === Module Registry Tests ===
-
-func TestModuleRegistry_Register(t *testing.T) {
-	registry := NewModuleRegistry()
-
-	// Create a simple module
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	err = registry.Register(bus)
-	if err != nil {
-		t.Fatalf("expected Register() to succeed: %v", err)
-	}
-
-	// Duplicate registration
-	err = registry.Register(bus)
-	if err == nil {
-		t.Error("expected error for duplicate registration")
-	}
-}
-
-func TestModuleRegistry_Register_Nil(t *testing.T) {
-	registry := NewModuleRegistry()
-
-	err := registry.Register(nil)
-	if err == nil {
-		t.Error("expected error for nil module")
-	}
-}
-
-func TestModuleRegistry_Get(t *testing.T) {
-	registry := NewModuleRegistry()
-
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	registry.Register(bus)
-
-	module, err := registry.Get("Bus")
-	if err != nil {
-		t.Fatalf("expected Get() to succeed: %v", err)
-	}
-
-	if module == nil {
-		t.Error("expected non-nil module")
-	}
-
-	// Get non-existent
-	module, err = registry.Get("NonExistent")
-	if err == nil {
-		t.Error("expected error for non-existent module")
-	}
-}
-
-func TestModuleRegistry_List(t *testing.T) {
-	registry := NewModuleRegistry()
-
-	bus, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-
-	registry.Register(bus)
-
-	names := registry.List()
-	if len(names) != 1 {
-		t.Errorf("expected 1 module, got %d", len(names))
-	}
-
-	if names[0] != "Bus" {
-		t.Errorf("expected name 'Bus', got '%s'", names[0])
-	}
-}
+// All module registry tests removed - Bus no longer implements Module interface
 
 // === Benchmark Tests ===
 
 func BenchmarkNew(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		New()
-	}
-}
-
-func BenchmarkNewWithConfig(b *testing.B) {
-	config := DefaultBusConfig()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		NewWithConfig(config)
+		New(nil)
 	}
 }
 
 func BenchmarkSetKey(b *testing.B) {
-	bus, _ := New()
+	bus, _ := New(nil)
 	key := []byte("32-byte-secret-key-for-aes-256!!")
 
 	b.ResetTimer()
@@ -699,29 +372,11 @@ func BenchmarkSetKey(b *testing.B) {
 }
 
 func BenchmarkAddCodec(b *testing.B) {
-	bus, _ := New()
+	bus, _ := New(nil)
 	plainCodec := plain.New()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		bus.RegisterCodec(plainCodec)
-	}
-}
-
-func BenchmarkValidate(b *testing.B) {
-	bus, _ := New()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		bus.Validate()
-	}
-}
-
-func BenchmarkStats(b *testing.B) {
-	bus, _ := New()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		bus.Stats()
 	}
 }

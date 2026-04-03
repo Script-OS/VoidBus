@@ -221,17 +221,17 @@ CriticalError(...)             // 致命错误
 
 ```go
 import (
-    "github.com/Script-OS/VoidBus"
+    voidbus "github.com/Script-OS/VoidBus"
+    "github.com/Script-OS/VoidBus/channel"
+    "github.com/Script-OS/VoidBus/channel/tcp"
+    "github.com/Script-OS/VoidBus/channel/ws"
     "github.com/Script-OS/VoidBus/codec/aes"
     "github.com/Script-OS/VoidBus/codec/base64"
-    "github.com/Script-OS/VoidBus/channel/ws"
-    "github.com/Script-OS/VoidBus/channel/tcp"
-    "github.com/Script-OS/VoidBus/negotiate"
 )
 
 func main() {
     // 1. 创建Bus
-    bus, err := VoidBus.New()
+    bus, err := voidbus.New(nil)
     if err != nil {
         panic(err)
     }
@@ -244,58 +244,107 @@ func main() {
     }
 
     // 3. 注册Codec（用户自定义代号，需收发双端一致）
-    aesCodec := aes.NewAES256Codec()
-    aesCodec.SetCode("aes")  // 自定义代号
-    bus.RegisterCodec(aesCodec)
+    bus.RegisterCodec(aes.NewAES256Codec())   // 自动使用 codec.Code() = "aes"
+    bus.RegisterCodec(base64.New())           // 自动使用 codec.Code() = "base64"
 
-    base64Codec := base64.New()
-    base64Codec.SetCode("b64")  // 自定义代号
-    bus.RegisterCodec(base64Codec)
+    // 4. 添加Channel - 支持多信道同时连接
+    bus.AddChannel(ws.NewClientChannel(channel.ChannelConfig{
+        Address:        "ws://localhost:8080/ws",
+        ConnectTimeout: 10 * time.Second,
+    }))
+    bus.AddChannel(tcp.NewClientChannel(channel.ChannelConfig{
+        Address:        "localhost:8080",
+        ConnectTimeout: 10 * time.Second,
+    }))
 
-    // 4. 注册Channel
-    bus.RegisterChannel(ws.NewModule())   // WebSocket（默认协商信道）
-    bus.RegisterChannel(tcp.NewModule())  // TCP
-
-    // 5. 创建协商请求（Bitmap自动生成）
-    request, err := bus.CreateNegotiateRequest()
+    // 5. Dial - 自动协商，使用所有注册的channel
+    conn, err := bus.Dial()
     if err != nil {
         panic(err)
     }
-    
-    // 6. 编码并发送协商请求（通过WebSocket）
-    encoded, err := request.Encode()
+    defer conn.Close()
+
+    // 6. 发送数据（消息式语义）
+    data := []byte("Hello, VoidBus!")
+    if _, err := conn.Write(data); err != nil {
+        panic(err)
+    }
+
+    // 7. 接收数据（返回完整消息）
+    buf := make([]byte, 4096)
+    n, err := conn.Read(buf)
     if err != nil {
         panic(err)
     }
-    // ... 通过WebSocket发送encoded到Server ...
-    
-    // 7. 接收并应用Server响应
-    // response, _ := negotiate.DecodeNegotiateResponse(serverData)
-    // bus.ApplyNegotiateResponse(response)
+    fmt.Println("Received:", string(buf[:n]))
+}
+```
 
-    // 8. 发送数据（用户自行序列化）
-    data := []byte("Hello, VoidBus!")  // 或 JSON/Protobuf 序列化
-    bus.Send(data)
+### Server 端
+
+```go
+import (
+    voidbus "github.com/Script-OS/VoidBus"
+    "github.com/Script-OS/VoidBus/channel"
+    "github.com/Script-OS/VoidBus/channel/tcp"
+    "github.com/Script-OS/VoidBus/channel/ws"
+    "github.com/Script-OS/VoidBus/channel/udp"
+)
+
+func main() {
+    bus, _ := voidbus.New(nil)
+    bus.SetKey([]byte("32-byte-secret-key-for-aes-256!!"))
+
+    // 注册Codec
+    bus.RegisterCodec(aes.NewAES256Codec())
+    bus.RegisterCodec(base64.New())
+
+    // 添加所有Server Channel - Listener会聚合它们
+    bus.AddChannel(tcp.NewServerChannel(channel.ChannelConfig{Address: ":8080"}))
+    bus.AddChannel(ws.NewServerChannel(channel.ChannelConfig{Address: ":8081"}))
+    bus.AddChannel(udp.NewServerChannel(channel.ChannelConfig{Address: ":8082"}))
+
+    // Listen - 聚合所有channel，支持多信道Session
+    listener, _ := bus.Listen()
+    defer listener.Close()
+
+    // Accept循环 - 每个连接已关联所有channel
+    for {
+        conn, _ := listener.Accept()
+        go handleClient(conn)
+    }
 }
 ```
 
 ### 自动Bitmap生成
 
-协商时，Bitmap**自动**从注册的Codec和Channel生成，用户无需手动设置：
+协商时，Bitmap**自动**从注册的Codec和Channel生成：
 
 ```go
 // 注册Codec后，CodecBitmap自动包含对应的bit
-bus.RegisterCodec(aesCodec)     // 自动设置CodecBitAES256
-bus.RegisterCodec(base64Codec)  // 自动设置CodecBitBase64
+bus.RegisterCodec(aes.NewAES256Codec())  // 自动设置 CodecBitAES256
+bus.RegisterCodec(base64.New())          // 自动设置 CodecBitBase64
 
-// 注册Channel后，ChannelBitmap自动包含对应的bit  
-bus.RegisterChannel(ws.NewModule())   // 自动设置ChannelBitWS
-bus.RegisterChannel(tcp.NewModule())  // 自动设置ChannelBitTCP
+// 添加Channel后，ChannelBitmap自动包含对应的bit
+bus.AddChannel(ws.NewClientChannel(...))  // 自动设置 ChannelBitWS
+bus.AddChannel(tcp.NewClientChannel(...)) // 自动设置 ChannelBitTCP
+bus.AddChannel(udp.NewClientChannel(...)) // 自动设置 ChannelBitUDP
 
-// 创建协商请求时，Bitmap自动生成
-request, _ := bus.CreateNegotiateRequest()
-// request.ChannelBitmap 和 request.CodecBitmap 已自动填充
+// Dial/Listen时自动协商，无需手动创建请求
+conn, _ := bus.Dial()                     // 自动发送NegotiateRequest
+listener, _ := bus.Listen()               // 自动接收并处理NegotiateRequest
 ```
+
+### 多信道分布原理
+
+VoidBus 支持**同时使用多个channel**，分片随机分布：
+
+1. **Client Dial**：通过第一个channel协商，获取SessionID，后续channel异步协商并关联
+2. **Server Accept**：第一个channel连接时立即返回，后续channel动态添加到Session
+3. **分片发送**：每个分片独立调用 ChannelPool.SelectChannel()，健康权重随机选择
+4. **分片接收**：所有channel的receiveLoop汇总到同一个recvQueue
+
+详见 [example/README.md](example/README.md)
 
 ## 安全等级
 
@@ -324,6 +373,7 @@ request, _ := bus.CreateNegotiateRequest()
 
 ## 模块文档
 
+- [example/](example/README.md) - 交互式示例（多channel + 多codec）
 - [negotiate/](negotiate/README.md) - 协商模块（Bitmap协议）
 - [codec/](codec/README.md) - 编解码模块
 - [channel/](channel/README.md) - 信道模块

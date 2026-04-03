@@ -65,6 +65,9 @@ type Bus struct {
 	// Key provider
 	keyProvider *embedded.Provider
 
+	// Server channels (for Listen aggregation)
+	serverChannels map[string]channel.ServerChannel
+
 	// State
 	connected  atomic.Bool
 	negotiated atomic.Bool
@@ -97,17 +100,18 @@ func New(config *BusConfig) (*Bus, error) {
 	}
 
 	return &Bus{
-		config:        config,
-		codecManager:  codec.NewCodecManager(),
-		channelPool:   channel.NewChannelPool(),
-		fragmentMgr:   fragment.NewFragmentManager(fragment.DefaultFragmentConfig()),
-		sessionMgr:    session.NewSessionManager(session.DefaultSessionManagerConfig()),
-		adaptiveTimer: internal.NewAdaptiveTimeout(1*time.Second, 30*time.Second),
-		recvQueue:     make(chan []byte, config.RecvBufferSize),
-		stopChan:      make(chan struct{}),
-		nakQueue:      make(map[string][]uint16),
-		nakBatchSize:  10,
-		sendSemaphore: make(chan struct{}, 8),
+		config:         config,
+		codecManager:   codec.NewCodecManager(),
+		channelPool:    channel.NewChannelPool(),
+		fragmentMgr:    fragment.NewFragmentManager(fragment.DefaultFragmentConfig()),
+		sessionMgr:     session.NewSessionManager(session.DefaultSessionManagerConfig()),
+		adaptiveTimer:  internal.NewAdaptiveTimeout(1*time.Second, 30*time.Second),
+		recvQueue:      make(chan []byte, config.RecvBufferSize),
+		stopChan:       make(chan struct{}),
+		nakQueue:       make(map[string][]uint16),
+		nakBatchSize:   10,
+		sendSemaphore:  make(chan struct{}, 8),
+		serverChannels: make(map[string]channel.ServerChannel),
 	}, nil
 }
 
@@ -153,29 +157,41 @@ func (b *Bus) AddChannel(c channel.Channel) error {
 }
 
 // AddChannelWithID adds a channel with specified ID.
+// If the channel is a ServerChannel, it's also stored for Listen aggregation.
 func (b *Bus) AddChannelWithID(c channel.Channel, id string) error {
 	if err := b.channelPool.AddChannel(c, id); err != nil {
 		return WrapModuleError("AddChannel", "channel", err)
 	}
+
+	// Check if this is a ServerChannel
+	if serverCh, ok := c.(channel.ServerChannel); ok {
+		b.serverChannels[id] = serverCh
+	}
+
 	return nil
 }
 
 // === Dial/Listen API ===
 
-// Dial initiates a client connection to a server.
+// Dial initiates a client connection using the default channel (first registered).
 // Returns net.Conn for subsequent Read/Write operations.
 //
-// Dial internally performs:
-//  1. Create negotiation request (from registered codecs)
-//  2. Send negotiation request
-//  3. Receive negotiation response
-//  4. Apply negotiated codec/channels
-//  5. Start receive loop
+// After initial negotiation, all registered channels are associated to the same session.
+func (b *Bus) Dial() (net.Conn, error) {
+	return b.dialWithChannel(nil)
+}
+
+// DialChannel initiates a client connection using a specific channel.
+// Returns net.Conn for subsequent Read/Write operations.
 //
-// Returns net.Conn for message-oriented communication:
-//   - Read: returns one complete message per call (reassembled, decoded)
-//   - Write: writes one complete message per call (encoded, fragmented, multi-channel)
-func (b *Bus) Dial(ch channel.Channel) (net.Conn, error) {
+// After initial negotiation, all registered channels are associated to the same session.
+func (b *Bus) DialChannel(ch channel.Channel) (net.Conn, error) {
+	return b.dialWithChannel(ch)
+}
+
+// dialWithChannel is the internal implementation.
+// If ch is nil, uses the first registered channel.
+func (b *Bus) dialWithChannel(ch channel.Channel) (net.Conn, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -183,22 +199,41 @@ func (b *Bus) Dial(ch channel.Channel) (net.Conn, error) {
 		return nil, ErrBusAlreadyRunning
 	}
 
-	// Find channel ID in pool
-	var channelID string
-	ids := b.channelPool.GetChannelIDs()
-	for _, id := range ids {
-		info, err := b.channelPool.GetChannel(id)
-		if err != nil {
-			continue
-		}
-		if info.Channel == ch {
-			channelID = id
-			break
-		}
+	// Get all channel IDs
+	channelIDs := b.channelPool.GetChannelIDs()
+	if len(channelIDs) == 0 {
+		return nil, errors.New("no channels registered")
 	}
 
-	if channelID == "" {
-		return nil, ErrChannelNotRegistered
+	// Determine which channel to use for initial negotiation
+	var negotiateChID string
+	var negotiateCh channel.Channel
+
+	if ch != nil {
+		// Find the specified channel
+		for _, id := range channelIDs {
+			info, err := b.channelPool.GetChannel(id)
+			if err != nil {
+				continue
+			}
+			if info.Channel == ch {
+				negotiateChID = id
+				negotiateCh = ch
+				break
+			}
+		}
+		if negotiateCh == nil {
+			return nil, ErrChannelNotRegistered
+		}
+	} else {
+		// Use first channel as default
+		firstChID := channelIDs[0]
+		firstChInfo, err := b.channelPool.GetChannel(firstChID)
+		if err != nil {
+			return nil, WrapModuleError("GetChannel", "channel", err)
+		}
+		negotiateChID = firstChID
+		negotiateCh = firstChInfo.Channel
 	}
 
 	// Mark as connected
@@ -216,26 +251,27 @@ func (b *Bus) Dial(ch channel.Channel) (net.Conn, error) {
 		return nil, errors.New("no channels registered")
 	}
 
-	request, err := negotiate.NewNegotiateRequest(channelBitmap, codecBitmap)
+	// First connection: sessionID is nil
+	request, err := negotiate.NewNegotiateRequest(channelBitmap, codecBitmap, nil)
 	if err != nil {
 		b.connected.Store(false)
 		return nil, WrapModuleError("NewNegotiateRequest", "negotiate", err)
 	}
 
-	// Send negotiation request
+	// Send negotiation request through selected channel
 	requestData, err := request.Encode()
 	if err != nil {
 		b.connected.Store(false)
 		return nil, WrapModuleError("EncodeNegotiateRequest", "negotiate", err)
 	}
 
-	if err := ch.Send(requestData); err != nil {
+	if err := negotiateCh.Send(requestData); err != nil {
 		b.connected.Store(false)
 		return nil, WrapModuleError("SendNegotiateRequest", "channel", err)
 	}
 
 	// Receive negotiation response
-	responseData, err := ch.Receive()
+	responseData, err := negotiateCh.Receive()
 	if err != nil {
 		b.connected.Store(false)
 		return nil, WrapModuleError("ReceiveNegotiateResponse", "channel", err)
@@ -255,15 +291,26 @@ func (b *Bus) Dial(ch channel.Channel) (net.Conn, error) {
 	b.channelPool.SetNegotiatedChannelBitmap(response.ChannelBitmap)
 	b.negotiated.Store(true)
 
-	// Start receive loop
-	b.running.Store(true)
-	go b.nakBatchLoop()
-	channelIDs := b.channelPool.GetChannelIDs()
+	// Negotiate remaining channels with SessionID in parallel
+	// Note: Each negotiateChannel will start its own receiveLoop after negotiation completes
+	sessionID := response.SessionID
 	for _, chID := range channelIDs {
-		info, err := b.channelPool.GetChannel(chID)
+		if chID == negotiateChID {
+			continue // Skip the channel used for initial negotiation
+		}
+		chInfo, err := b.channelPool.GetChannel(chID)
 		if err != nil {
 			continue
 		}
+		b.wg.Add(1)
+		go b.negotiateChannelAndStartReceive(chID, chInfo.Channel, sessionID, channelBitmap, codecBitmap)
+	}
+
+	// Start receive loop only for the initial negotiation channel
+	b.running.Store(true)
+	go b.nakBatchLoop()
+	info, err := b.channelPool.GetChannel(negotiateChID)
+	if err == nil {
 		b.wg.Add(1)
 		go b.receiveLoop(info)
 	}
@@ -273,48 +320,124 @@ func (b *Bus) Dial(ch channel.Channel) (net.Conn, error) {
 	go b.bridgeReceiveToChan(recvChan)
 
 	// Create and return VoidBusConn
-	conn := newVoidBusConn(b, channelID, ch.Type(), recvChan)
+	conn := newVoidBusConn(b, negotiateChID, negotiateCh.Type(), recvChan)
 	return conn, nil
+}
+
+// negotiateChannel negotiates a single channel with existing SessionID.
+// Called in background for additional channels.
+// If negotiation fails, the channel is removed from the pool.
+func (b *Bus) negotiateChannel(channelID string, ch channel.Channel, sessionID, channelBitmap, codecBitmap []byte) bool {
+	// Create negotiation request with SessionID
+	request, err := negotiate.NewNegotiateRequest(channelBitmap, codecBitmap, sessionID)
+	if err != nil {
+		if b.config.DebugMode {
+			println("[DEBUG] negotiateChannel: failed to create request:", err.Error())
+		}
+		b.channelPool.RemoveChannel(channelID)
+		ch.Close()
+		return false
+	}
+
+	// Send negotiation request
+	requestData, err := request.Encode()
+	if err != nil {
+		if b.config.DebugMode {
+			println("[DEBUG] negotiateChannel: failed to encode request:", err.Error())
+		}
+		b.channelPool.RemoveChannel(channelID)
+		ch.Close()
+		return false
+	}
+
+	if err := ch.Send(requestData); err != nil {
+		if b.config.DebugMode {
+			println("[DEBUG] negotiateChannel: failed to send request:", err.Error())
+		}
+		b.channelPool.RemoveChannel(channelID)
+		ch.Close()
+		return false
+	}
+
+	// Receive negotiation response
+	responseData, err := ch.Receive()
+	if err != nil {
+		if b.config.DebugMode {
+			println("[DEBUG] negotiateChannel: failed to receive response:", err.Error())
+		}
+		b.channelPool.RemoveChannel(channelID)
+		ch.Close()
+		return false
+	}
+
+	response, err := negotiate.DecodeNegotiateResponse(responseData)
+	if err != nil {
+		if b.config.DebugMode {
+			println("[DEBUG] negotiateChannel: failed to decode response:", err.Error())
+		}
+		b.channelPool.RemoveChannel(channelID)
+		ch.Close()
+		return false
+	}
+
+	if response.Status != negotiate.NegotiateStatusSuccess {
+		if b.config.DebugMode {
+			println("[DEBUG] negotiateChannel: negotiation failed, status:", response.Status)
+		}
+		b.channelPool.RemoveChannel(channelID)
+		ch.Close()
+		return false
+	}
+
+	if b.config.DebugMode {
+		println("[DEBUG] negotiateChannel: channel", channelID, "negotiated successfully")
+	}
+	return true
+}
+
+// negotiateChannelAndStartReceive negotiates a single channel with existing SessionID,
+// then starts its receive loop if successful. Called in background for additional channels.
+func (b *Bus) negotiateChannelAndStartReceive(channelID string, ch channel.Channel, sessionID, channelBitmap, codecBitmap []byte) {
+	defer b.wg.Done()
+
+	// First negotiate the channel
+	success := b.negotiateChannel(channelID, ch, sessionID, channelBitmap, codecBitmap)
+
+	// Only start receive loop if negotiation was successful
+	if success && b.running.Load() {
+		info, err := b.channelPool.GetChannel(channelID)
+		if err == nil {
+			b.wg.Add(1)
+			go b.receiveLoop(info)
+		}
+	}
 }
 
 // Listen starts a server listener.
 // Returns net.Listener for accepting client connections.
 //
-// Each Accept returns a net.Conn that is already negotiated.
-func (b *Bus) Listen(ch channel.Channel) (net.Listener, error) {
+// Listen aggregates all registered ServerChannels and waits for multi-channel sessions.
+// Each Accept returns a net.Conn when all negotiated channels are connected.
+func (b *Bus) Listen() (net.Listener, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Check if channel is ServerChannel
-	serverCh, ok := ch.(channel.ServerChannel)
-	if !ok {
-		return nil, ErrInvalidChannelType
-	}
-
-	// Find channel ID in pool
-	var channelID string
-	ids := b.channelPool.GetChannelIDs()
-	for _, id := range ids {
-		info, err := b.channelPool.GetChannel(id)
-		if err != nil {
-			continue
-		}
-		if info.Channel == ch {
-			channelID = id
-			break
-		}
-	}
-
-	if channelID == "" {
-		return nil, ErrChannelNotRegistered
+	// Check if any server channels are registered
+	if len(b.serverChannels) == 0 {
+		return nil, errors.New("no server channels registered")
 	}
 
 	// Mark as running
 	b.running.Store(true)
 	b.connected.Store(true)
 
-	// Create and return listener
-	listener := newVoidBusListener(b, serverCh, channelID)
+	// Create listener with session timeout from config
+	sessionTimeout := b.config.NegotiateTimeout
+	if sessionTimeout <= 0 {
+		sessionTimeout = 30 * time.Second
+	}
+
+	listener := newVoidBusListener(b, sessionTimeout)
 	return listener, nil
 }
 
@@ -453,6 +576,16 @@ func (b *Bus) sendInternal(ctx context.Context, data []byte) error {
 	}
 
 	sendWg.Wait()
+
+	// Check for any send errors
+	select {
+	case err := <-errChan:
+		b.sessionMgr.RemoveSendSession(sess.ID)
+		return WrapModuleError("SendFragments", "channel", err)
+	default:
+		// All fragments sent successfully
+	}
+
 	b.adaptiveTimer.AddMeasurement(time.Since(sess.CreatedAt))
 	return nil
 }

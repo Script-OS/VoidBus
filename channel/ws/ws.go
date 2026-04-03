@@ -40,10 +40,12 @@ const (
 )
 
 // ClientChannel implements channel.Channel for WebSocket client connections.
+// Note: gorilla/websocket WriteMessage is NOT thread-safe, so we use writeMu for concurrent-safe writes.
 type ClientChannel struct {
 	conn         *websocket.Conn
 	config       channel.ChannelConfig
-	mu           sync.RWMutex
+	mu           sync.RWMutex // State management (closed, connected)
+	writeMu      sync.Mutex   // Write serialization (gorilla/websocket is NOT thread-safe)
 	closed       bool
 	connected    bool
 	id           string
@@ -94,22 +96,44 @@ func NewClientChannel(config channel.ChannelConfig) (*ClientChannel, error) {
 }
 
 // Send implements channel.Channel.Send.
+// Uses writeMu for concurrent-safe writes (gorilla/websocket WriteMessage is NOT thread-safe).
 func (c *ClientChannel) Send(data []byte) error {
+	// Step 1: Check state (quick check without holding write lock)
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	if c.closed {
+		c.mu.RUnlock()
 		return channel.ErrChannelClosed
 	}
 	if !c.connected {
+		c.mu.RUnlock()
 		return channel.ErrChannelDisconnected
 	}
+	c.mu.RUnlock()
 
+	// Step 2: Acquire write mutex for actual write operation
+	c.writeMu.Lock()
+
+	// Step 3: Re-check state after acquiring write lock (may have changed during wait)
+	c.mu.RLock()
+	if c.closed || !c.connected {
+		c.mu.RUnlock()
+		c.writeMu.Unlock()
+		return channel.ErrChannelDisconnected
+	}
+	conn := c.conn
+	c.mu.RUnlock()
+
+	// Step 4: Perform actual write
 	if len(data) > MaxMessageSize {
+		c.writeMu.Unlock()
 		return errors.New("ws: data exceeds max message size")
 	}
 
-	if err := c.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	err := conn.WriteMessage(websocket.BinaryMessage, data)
+	c.writeMu.Unlock()
+
+	// Step 5: Handle result
+	if err != nil {
 		c.handleDisconnect()
 		return &channel.ChannelError{
 			Op:        "send",
@@ -119,7 +143,9 @@ func (c *ClientChannel) Send(data []byte) error {
 		}
 	}
 
+	c.mu.Lock()
 	c.lastActivity = time.Now()
+	c.mu.Unlock()
 	return nil
 }
 
@@ -458,10 +484,12 @@ func (s *ServerChannel) removeClient(id string) {
 }
 
 // AcceptedChannel represents an accepted WebSocket connection.
+// Note: gorilla/websocket WriteMessage is NOT thread-safe, so we use writeMu for concurrent-safe writes.
 type AcceptedChannel struct {
 	conn         *websocket.Conn
 	server       *ServerChannel
-	mu           sync.RWMutex
+	mu           sync.RWMutex // State management
+	writeMu      sync.Mutex   // Write serialization
 	closed       bool
 	connected    bool
 	id           string
@@ -469,22 +497,44 @@ type AcceptedChannel struct {
 }
 
 // Send implements channel.Channel.Send.
+// Uses writeMu for concurrent-safe writes (gorilla/websocket WriteMessage is NOT thread-safe).
 func (a *AcceptedChannel) Send(data []byte) error {
+	// Step 1: Check state
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-
 	if a.closed {
+		a.mu.RUnlock()
 		return channel.ErrChannelClosed
 	}
 	if !a.connected {
+		a.mu.RUnlock()
 		return channel.ErrChannelDisconnected
 	}
+	a.mu.RUnlock()
 
+	// Step 2: Acquire write mutex
+	a.writeMu.Lock()
+
+	// Step 3: Re-check state after acquiring write lock
+	a.mu.RLock()
+	if a.closed || !a.connected {
+		a.mu.RUnlock()
+		a.writeMu.Unlock()
+		return channel.ErrChannelDisconnected
+	}
+	conn := a.conn
+	a.mu.RUnlock()
+
+	// Step 4: Perform write
 	if len(data) > MaxMessageSize {
+		a.writeMu.Unlock()
 		return errors.New("ws: data exceeds max message size")
 	}
 
-	if err := a.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	err := conn.WriteMessage(websocket.BinaryMessage, data)
+	a.writeMu.Unlock()
+
+	// Step 5: Handle result
+	if err != nil {
 		a.handleDisconnect()
 		return &channel.ChannelError{
 			Op:        "send",
@@ -494,7 +544,9 @@ func (a *AcceptedChannel) Send(data []byte) error {
 		}
 	}
 
+	a.mu.Lock()
 	a.lastActivity = time.Now()
+	a.mu.Unlock()
 	return nil
 }
 

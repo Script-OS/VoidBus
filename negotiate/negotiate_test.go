@@ -475,7 +475,7 @@ func TestNewNegotiateRequest(t *testing.T) {
 	codecBitmap.SetCodec(CodecBitPlain)
 	codecBitmap.SetCodec(CodecBitAES256)
 
-	req, err := NewNegotiateRequest(chBitmap, codecBitmap)
+	req, err := NewNegotiateRequest(chBitmap, codecBitmap, nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -506,7 +506,7 @@ func TestNegotiateRequest_EncodeDecode(t *testing.T) {
 	codecBitmap.SetCodec(CodecBitAES256)
 	codecBitmap.SetCodec(CodecBitChaCha20)
 
-	req, err := NewNegotiateRequest(chBitmap, codecBitmap)
+	req, err := NewNegotiateRequest(chBitmap, codecBitmap, nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -585,7 +585,7 @@ func TestNegotiateRequest_Encode_BitmapTooLarge(t *testing.T) {
 
 func TestDecodeNegotiateRequest_InvalidMagic(t *testing.T) {
 	// Create valid request
-	req, _ := NewNegotiateRequest(NewChannelBitmap(2), NewCodecBitmap(2))
+	req, _ := NewNegotiateRequest(NewChannelBitmap(2), NewCodecBitmap(2), nil)
 	encoded, _ := req.Encode()
 
 	// Corrupt magic
@@ -598,7 +598,7 @@ func TestDecodeNegotiateRequest_InvalidMagic(t *testing.T) {
 }
 
 func TestDecodeNegotiateRequest_InvalidVersion(t *testing.T) {
-	req, _ := NewNegotiateRequest(NewChannelBitmap(2), NewCodecBitmap(2))
+	req, _ := NewNegotiateRequest(NewChannelBitmap(2), NewCodecBitmap(2), nil)
 	encoded, _ := req.Encode()
 
 	// Corrupt version
@@ -611,7 +611,7 @@ func TestDecodeNegotiateRequest_InvalidVersion(t *testing.T) {
 }
 
 func TestDecodeNegotiateRequest_InvalidChecksum(t *testing.T) {
-	req, _ := NewNegotiateRequest(NewChannelBitmap(2), NewCodecBitmap(2))
+	req, _ := NewNegotiateRequest(NewChannelBitmap(2), NewCodecBitmap(2), nil)
 	encoded, _ := req.Encode()
 
 	// Corrupt checksum
@@ -986,7 +986,7 @@ func TestServerNegotiator_HandleRequest(t *testing.T) {
 	clientCodecBitmap.SetCodec(CodecBitPlain)
 	clientCodecBitmap.SetCodec(CodecBitAES256)
 
-	req, _ := NewNegotiateRequest(clientChBitmap, clientCodecBitmap)
+	req, _ := NewNegotiateRequest(clientChBitmap, clientCodecBitmap, nil)
 
 	// Handle request
 	resp, err := server.HandleRequest(req)
@@ -1040,7 +1040,7 @@ func TestServerNegotiator_HandleRequest_NoCommonChannels(t *testing.T) {
 	clientCodecBitmap := NewCodecBitmap(2)
 	clientCodecBitmap.SetCodec(CodecBitPlain)
 
-	req, _ := NewNegotiateRequest(clientChBitmap, clientCodecBitmap)
+	req, _ := NewNegotiateRequest(clientChBitmap, clientCodecBitmap, nil)
 
 	// Handle request - should reject
 	resp, err := server.HandleRequest(req)
@@ -1079,7 +1079,7 @@ func TestServerNegotiator_HandleRequest_NoCommonCodecs(t *testing.T) {
 	clientCodecBitmap := NewCodecBitmap(2)
 	clientCodecBitmap.SetCodec(CodecBitPlain)
 
-	req, _ := NewNegotiateRequest(clientChBitmap, clientCodecBitmap)
+	req, _ := NewNegotiateRequest(clientChBitmap, clientCodecBitmap, nil)
 
 	// Handle request - should reject
 	resp, err := server.HandleRequest(req)
@@ -1115,7 +1115,7 @@ func TestServerNegotiator_HandleRawRequest(t *testing.T) {
 	clientCodecBitmap := NewCodecBitmap(2)
 	clientCodecBitmap.SetCodec(CodecBitAES256)
 
-	req, _ := NewNegotiateRequest(clientChBitmap, clientCodecBitmap)
+	req, _ := NewNegotiateRequest(clientChBitmap, clientCodecBitmap, nil)
 	encoded, _ := req.Encode()
 
 	// Handle raw request

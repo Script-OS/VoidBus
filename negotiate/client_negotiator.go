@@ -13,6 +13,7 @@ type ClientNegotiatorImpl struct {
 
 	channelBitmap ChannelBitmap
 	codecBitmap   CodecBitmap
+	sessionID     []byte // Current session ID (nil for first connection)
 	timeout       time.Duration
 	maxRetryCount int
 }
@@ -59,6 +60,20 @@ func (n *ClientNegotiatorImpl) SetCodecBitmap(bitmap CodecBitmap) {
 	n.codecBitmap = bitmap
 }
 
+// SetSessionID sets the session ID for subsequent connections.
+func (n *ClientNegotiatorImpl) SetSessionID(sessionID []byte) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.sessionID = sessionID
+}
+
+// GetSessionID returns the current session ID.
+func (n *ClientNegotiatorImpl) GetSessionID() []byte {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.sessionID
+}
+
 // GetChannelBitmap returns the client's channel bitmap.
 func (n *ClientNegotiatorImpl) GetChannelBitmap() ChannelBitmap {
 	n.mu.RLock()
@@ -95,8 +110,8 @@ func (n *ClientNegotiatorImpl) Negotiate(defaultChannel ChannelBit) (*Result, er
 		return nil, errors.New("negotiate: default channel not supported")
 	}
 
-	// Create negotiation request
-	request, err := NewNegotiateRequest(n.channelBitmap, n.codecBitmap)
+	// Create negotiation request (with sessionID if available)
+	request, err := NewNegotiateRequest(n.channelBitmap, n.codecBitmap, n.sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +127,7 @@ func (n *ClientNegotiatorImpl) Negotiate(defaultChannel ChannelBit) (*Result, er
 	result := &Result{
 		AvailableChannels: n.channelBitmap,
 		AvailableCodecs:   n.codecBitmap,
-		SessionID:         nil, // Will be set after server response
+		SessionID:         n.sessionID, // Will be updated after server response
 		Status:            NegotiateStatusSuccess,
 		NegotiatedAt:      time.Now(),
 	}
@@ -129,7 +144,7 @@ func (n *ClientNegotiatorImpl) CreateRequest() (*NegotiateRequest, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	return NewNegotiateRequest(n.channelBitmap, n.codecBitmap)
+	return NewNegotiateRequest(n.channelBitmap, n.codecBitmap, n.sessionID)
 }
 
 // ProcessResponse processes server response and returns result.
@@ -154,6 +169,9 @@ func (n *ClientNegotiatorImpl) ProcessResponse(response *NegotiateResponse) (*Re
 	if IsCodecBitmapEmpty(response.CodecBitmap) {
 		return nil, ErrNoCommonCodecs
 	}
+
+	// Store session ID for subsequent connections
+	n.sessionID = response.SessionID
 
 	// Create result
 	result := &Result{

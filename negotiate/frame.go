@@ -61,7 +61,9 @@ var (
 // [N bytes: ChannelBitmap]   - Supported channels bitmap
 // [1 byte:  CodecCount]      - Number of codec bitmap bytes
 // [N bytes: CodecBitmap]     - Supported codecs bitmap
-// [8 bytes: SessionNonce]    - Random nonce for SessionID generation
+// [8 bytes: SessionNonce]    - Random nonce for first connection
+// [1 byte:  HasSessionID]    - 0 = no SessionID (first), 1 = has SessionID (subsequent)
+// [8 bytes: SessionID]       - Optional, present only if HasSessionID = 1
 // [4 bytes: Timestamp]       - Unix timestamp (anti-replay)
 // [1 byte:  PaddingLen]      - Padding length (0-255)
 // [M bytes: Padding]         - Random padding (stealth)
@@ -69,9 +71,15 @@ var (
 type NegotiateRequest struct {
 	ChannelBitmap ChannelBitmap
 	CodecBitmap   CodecBitmap
-	SessionNonce  []byte // 8 bytes
+	SessionNonce  []byte // 8 bytes, always present
+	SessionID     []byte // 8 bytes, optional (nil for first connection)
 	Timestamp     uint32
 	Padding       []byte // 0-255 bytes
+}
+
+// IsFirstConnection returns true if this is the first channel connection.
+func (r *NegotiateRequest) IsFirstConnection() bool {
+	return len(r.SessionID) == 0
 }
 
 // NegotiateResponse represents a negotiation response frame.
@@ -83,7 +91,7 @@ type NegotiateRequest struct {
 // [N bytes: ChannelBitmap]   - Available channels (intersection)
 // [1 byte:  CodecCount]      - Number of codec bitmap bytes
 // [N bytes: CodecBitmap]     - Available codecs (intersection)
-// [8 bytes: SessionID]       - Server-generated SessionID
+// [8 bytes: SessionID]       - Session identifier
 // [1 byte:  Status]          - Negotiation status
 // [1 byte:  PaddingLen]      - Padding length (0-255)
 // [M bytes: Padding]         - Random padding (stealth)
@@ -96,12 +104,19 @@ type NegotiateResponse struct {
 	Padding       []byte // 0-255 bytes
 }
 
-// NewNegotiateRequest creates a new negotiation request with random nonce and padding.
-func NewNegotiateRequest(channelBitmap, codecBitmap []byte) (*NegotiateRequest, error) {
+// NewNegotiateRequest creates a new negotiation request.
+// If sessionID is nil, this is the first connection and a new nonce is generated.
+// If sessionID is provided, this is a subsequent connection for the same session.
+func NewNegotiateRequest(channelBitmap, codecBitmap []byte, sessionID []byte) (*NegotiateRequest, error) {
 	// Generate random nonce
 	nonce := make([]byte, NegotiateNonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
+	}
+
+	// Validate sessionID if provided
+	if len(sessionID) > 0 && len(sessionID) != NegotiateSessionIDSize {
+		return nil, ErrSessionIDSize
 	}
 
 	// Generate random padding (0-127 bytes for stealth)
@@ -115,6 +130,7 @@ func NewNegotiateRequest(channelBitmap, codecBitmap []byte) (*NegotiateRequest, 
 		ChannelBitmap: channelBitmap,
 		CodecBitmap:   codecBitmap,
 		SessionNonce:  nonce,
+		SessionID:     sessionID, // nil for first, or existing SessionID
 		Timestamp:     uint32(time.Now().Unix()),
 		Padding:       padding,
 	}, nil
@@ -142,11 +158,19 @@ func (r *NegotiateRequest) Encode() ([]byte, error) {
 	buf.WriteByte(byte(len(r.CodecBitmap)))
 	buf.Write(r.CodecBitmap)
 
-	// SessionNonce (8 bytes)
+	// SessionNonce (8 bytes, always present)
 	if len(r.SessionNonce) != NegotiateNonceSize {
 		return nil, ErrNonceSize
 	}
 	buf.Write(r.SessionNonce)
+
+	// HasSessionID flag + optional SessionID
+	if len(r.SessionID) > 0 {
+		buf.WriteByte(1)
+		buf.Write(r.SessionID)
+	} else {
+		buf.WriteByte(0)
+	}
 
 	// Timestamp
 	binary.Write(buf, binary.BigEndian, r.Timestamp)
@@ -217,6 +241,20 @@ func DecodeNegotiateRequest(data []byte) (*NegotiateRequest, error) {
 		return nil, err
 	}
 
+	// HasSessionID flag
+	hasSessionID, err := buf.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+
+	var sessionID []byte
+	if hasSessionID == 1 {
+		sessionID = make([]byte, NegotiateSessionIDSize)
+		if _, err := buf.Read(sessionID); err != nil {
+			return nil, err
+		}
+	}
+
 	// Timestamp
 	var timestamp uint32
 	if err := binary.Read(buf, binary.BigEndian, &timestamp); err != nil {
@@ -257,6 +295,7 @@ func DecodeNegotiateRequest(data []byte) (*NegotiateRequest, error) {
 		ChannelBitmap: chBitmap,
 		CodecBitmap:   codecBitmap,
 		SessionNonce:  nonce,
+		SessionID:     sessionID,
 		Timestamp:     timestamp,
 		Padding:       padding,
 	}, nil
@@ -398,12 +437,9 @@ func DecodeNegotiateResponse(data []byte) (*NegotiateResponse, error) {
 }
 
 // NewNegotiateResponse creates a new negotiation response.
-// Generates SessionID from nonce and adds random padding.
-func NewNegotiateResponse(channelBitmap, codecBitmap []byte, nonce []byte, status byte) (*NegotiateResponse, error) {
-	// Generate SessionID from nonce (SHA256 truncated)
-	hash := internal.ComputeDataHash(nonce)
-	sessionID := hash[:NegotiateSessionIDSize]
-
+// For first connection: generates SessionID from nonce.
+// For subsequent connection: uses provided sessionID.
+func NewNegotiateResponse(channelBitmap, codecBitmap []byte, sessionID []byte, status byte) (*NegotiateResponse, error) {
 	// Generate random padding
 	paddingLen := internal.RandomIntRange(0, 127)
 	padding := make([]byte, paddingLen)
@@ -418,4 +454,10 @@ func NewNegotiateResponse(channelBitmap, codecBitmap []byte, nonce []byte, statu
 		Status:        status,
 		Padding:       padding,
 	}, nil
+}
+
+// GenerateSessionID generates a new SessionID from nonce.
+func GenerateSessionID(nonce []byte) []byte {
+	hash := internal.ComputeDataHash(nonce)
+	return hash[:NegotiateSessionIDSize]
 }

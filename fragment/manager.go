@@ -28,7 +28,7 @@ func DefaultFragmentConfig() FragmentConfig {
 		FragmentTimeout:    30 * time.Second,
 		MaxPendingSessions: 1000,
 		GCInterval:         10 * time.Second,
-		HeaderOverhead:     64, // V2Header大约64字节
+		HeaderOverhead:     130, // VoidBus Header overhead: 2 (len prefix) + ~36 (SessionID UUID) + 82 (HeaderBaseSize) + ~5 (UDP frame) + margin
 	}
 }
 

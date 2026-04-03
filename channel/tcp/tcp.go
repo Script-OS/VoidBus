@@ -40,10 +40,12 @@ const (
 // Length is uint32 in little-endian format
 
 // ClientChannel implements channel.Channel for TCP client connections.
+// Note: net.Conn.Write is NOT thread-safe for concurrent writes, so we use writeMu.
 type ClientChannel struct {
 	conn         net.Conn
 	config       channel.ChannelConfig
-	mu           sync.RWMutex
+	mu           sync.RWMutex // State management
+	writeMu      sync.Mutex   // Write serialization
 	closed       bool
 	connected    bool
 	id           string
@@ -106,17 +108,34 @@ func NewClientChannel(config channel.ChannelConfig) (*ClientChannel, error) {
 // Return Guarantees:
 //   - On success: complete data frame sent to peer
 func (c *ClientChannel) Send(data []byte) error {
+	// Step 1: Check state
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	if c.closed {
+		c.mu.RUnlock()
 		return channel.ErrChannelClosed
 	}
 	if !c.connected {
+		c.mu.RUnlock()
 		return channel.ErrChannelDisconnected
 	}
+	c.mu.RUnlock()
 
+	// Step 2: Acquire write mutex
+	c.writeMu.Lock()
+
+	// Step 3: Re-check state after acquiring write lock
+	c.mu.RLock()
+	if c.closed || !c.connected {
+		c.mu.RUnlock()
+		c.writeMu.Unlock()
+		return channel.ErrChannelDisconnected
+	}
+	conn := c.conn
+	c.mu.RUnlock()
+
+	// Step 4: Perform write (length prefix + data atomically)
 	if len(data) > MaxFrameSize {
+		c.writeMu.Unlock()
 		return errors.New("tcp: data exceeds max frame size")
 	}
 
@@ -124,30 +143,34 @@ func (c *ClientChannel) Send(data []byte) error {
 	lengthBuf := make([]byte, LengthPrefixSize)
 	binary.LittleEndian.PutUint32(lengthBuf, uint32(len(data)))
 
-	// Write length + data
-	if _, err := c.conn.Write(lengthBuf); err != nil {
+	writeErr := func() error {
+		if _, err := conn.Write(lengthBuf); err != nil {
+			return err
+		}
+		if len(data) > 0 {
+			if _, err := conn.Write(data); err != nil {
+				return err
+			}
+		}
+		return nil
+	}()
+
+	c.writeMu.Unlock()
+
+	// Step 5: Handle result
+	if writeErr != nil {
 		c.handleDisconnect()
 		return &channel.ChannelError{
 			Op:        "send",
-			Err:       err,
-			Msg:       "failed to write length prefix",
+			Err:       writeErr,
+			Msg:       "failed to write data",
 			Retryable: false,
 		}
 	}
 
-	if len(data) > 0 {
-		if _, err := c.conn.Write(data); err != nil {
-			c.handleDisconnect()
-			return &channel.ChannelError{
-				Op:        "send",
-				Err:       err,
-				Msg:       "failed to write data",
-				Retryable: false,
-			}
-		}
-	}
-
+	c.mu.Lock()
 	c.lastActivity = time.Now()
+	c.mu.Unlock()
 	return nil
 }
 
@@ -458,10 +481,13 @@ func (s *ServerChannel) removeClient(id string) {
 }
 
 // AcceptedChannel represents an accepted client connection on server.
+// AcceptedChannel represents an accepted TCP connection.
+// Note: net.Conn.Write is NOT thread-safe for concurrent writes, so we use writeMu.
 type AcceptedChannel struct {
 	conn         net.Conn
 	server       *ServerChannel
-	mu           sync.RWMutex
+	mu           sync.RWMutex // State management
+	writeMu      sync.Mutex   // Write serialization
 	closed       bool
 	connected    bool
 	id           string
@@ -469,18 +495,36 @@ type AcceptedChannel struct {
 }
 
 // Send implements channel.Channel.Send.
+// Uses writeMu for concurrent-safe writes (net.Conn.Write is NOT thread-safe).
 func (a *AcceptedChannel) Send(data []byte) error {
+	// Step 1: Check state
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-
 	if a.closed {
+		a.mu.RUnlock()
 		return channel.ErrChannelClosed
 	}
 	if !a.connected {
+		a.mu.RUnlock()
 		return channel.ErrChannelDisconnected
 	}
+	a.mu.RUnlock()
 
+	// Step 2: Acquire write mutex
+	a.writeMu.Lock()
+
+	// Step 3: Re-check state after acquiring write lock
+	a.mu.RLock()
+	if a.closed || !a.connected {
+		a.mu.RUnlock()
+		a.writeMu.Unlock()
+		return channel.ErrChannelDisconnected
+	}
+	conn := a.conn
+	a.mu.RUnlock()
+
+	// Step 4: Perform write (length prefix + data atomically)
 	if len(data) > MaxFrameSize {
+		a.writeMu.Unlock()
 		return errors.New("tcp: data exceeds max frame size")
 	}
 
@@ -488,29 +532,34 @@ func (a *AcceptedChannel) Send(data []byte) error {
 	lengthBuf := make([]byte, LengthPrefixSize)
 	binary.LittleEndian.PutUint32(lengthBuf, uint32(len(data)))
 
-	if _, err := a.conn.Write(lengthBuf); err != nil {
+	writeErr := func() error {
+		if _, err := conn.Write(lengthBuf); err != nil {
+			return err
+		}
+		if len(data) > 0 {
+			if _, err := conn.Write(data); err != nil {
+				return err
+			}
+		}
+		return nil
+	}()
+
+	a.writeMu.Unlock()
+
+	// Step 5: Handle result
+	if writeErr != nil {
 		a.handleDisconnect()
 		return &channel.ChannelError{
 			Op:        "send",
-			Err:       err,
-			Msg:       "failed to write length prefix",
+			Err:       writeErr,
+			Msg:       "failed to write data",
 			Retryable: false,
 		}
 	}
 
-	if len(data) > 0 {
-		if _, err := a.conn.Write(data); err != nil {
-			a.handleDisconnect()
-			return &channel.ChannelError{
-				Op:        "send",
-				Err:       err,
-				Msg:       "failed to write data",
-				Retryable: false,
-			}
-		}
-	}
-
+	a.mu.Lock()
 	a.lastActivity = time.Now()
+	a.mu.Unlock()
 	return nil
 }
 
