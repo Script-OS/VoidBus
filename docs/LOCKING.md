@@ -182,24 +182,24 @@ func (m *FragmentManager) CleanupExpired() int {
 
 ---
 
-## 已修复的问题
+## 正确实现的设计案例
 
-### P0级修复（2026-04-02）
+### P0级正确实现
 
-| 文件 | 方法 | 问题 | 修复方案 |
-|------|------|------|----------|
-| tcp/tcp.go | AcceptedChannel.Close() | 持锁调用server.removeClient() | 复制-释放-操作 |
-| ws/ws.go | AcceptedChannel.Close() | 同上 | 同上 |
-| quic/quic.go | AcceptedChannel.Close() | 同上 | 同上 |
-| quic/quic.go | ServerChannel.Close() | 持锁调用client.Close() | 复制列表-释放-锁外关闭 |
-| ws/ws.go | ServerChannel.Close() | 同上 | 同上 |
+| 文件 | 方法 | 设计要点 | 实现方案 |
+|------|------|----------|----------|
+| tcp/tcp.go | AcceptedChannel.Close() | 锁顺序正确 | 复制-释放-操作 |
+| ws/ws.go | AcceptedChannel.Close() | 锁顺序正确 | 同上 |
+| quic/quic.go | AcceptedChannel.Close() | 锁顺序正确 | 同上 |
+| quic/quic.go | ServerChannel.Close() | 锁顺序正确 | 复制列表-释放-锁外关闭 |
+| ws/ws.go | ServerChannel.Close() | 锁顺序正确 | 同上 |
 
-### P2级修复（2026-04-02）
+### P2级正确实现
 
-| 文件 | 方法 | 问题 | 修复方案 |
-|------|------|------|----------|
-| fragment/manager.go | CleanupExpired() | 长时间持写锁 | 两阶段清理 |
-| session/manager.go | CleanupExpired() | 同上 | 同上 |
+| 文件 | 方法 | 设计要点 | 实现方案 |
+|------|------|----------|----------|
+| fragment/manager.go | CleanupExpired() | 最小持锁时间 | 两阶段清理 |
+| session/manager.go | CleanupExpired() | 最小持锁时间 | 同上 |
 
 ---
 
@@ -215,9 +215,9 @@ func (m *FragmentManager) CleanupExpired() int {
 
 ---
 
-## 5. 状态转换的锁使用原则（v1.0）
+## 5. 状态转换的锁使用原则
 
-VoidBus v1.0 使用单一状态枚举管理 Bus 状态，状态转换遵循明确的锁使用原则。
+VoidBus 使用单一状态枚举管理 Bus 状态，状态转换遵循明确的锁使用原则。
 
 ### 5.1 状态枚举定义
 
@@ -233,9 +233,9 @@ const (
 )
 ```
 
-### 5.2 状态转换锁原则（v1.0 更新）
+### 5.2 状态转换锁原则
 
-**重要变更（2026-04-03）**: 为避免双重加锁死锁，setState() 方法已改为**要求外部持锁**。
+**设计决策**: setState() 方法要求外部持锁，避免双重加锁死锁。
 
 **原则**: 状态转换方法 `setState()` **要求外部已持有 `b.mu` 锁**，内部不再加锁。
 
@@ -297,7 +297,7 @@ func (b *Bus) Dial(ch Channel) (net.Conn, error) {
 
 **影响范围**:
 - 所有 setState() 调用必须在持锁状态下进行
-- 已修复的方法：dialWithChannel, Listen, Stop, startClientBusAndReturnConn
+- 关键方法：dialWithChannel, Listen, Stop, startClientBusAndReturnConn
 
 ### 5.3 状态查询的锁原则
 

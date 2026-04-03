@@ -454,7 +454,7 @@ type NegotiationResponse struct {
 
 ### 8.1 核心 API（net.Conn/net.Listener 风格）
 
-VoidBus v1.0 采用 Go 标准库的 `net.Conn` 和 `net.Listener` 风格 API，提供消息式的通信接口。
+VoidBus 采用 Go 标准库的 `net.Conn` 和 `net.Listener` 风格 API，提供消息式的通信接口。
 
 ```go
 // === Client 模式 ===
@@ -833,9 +833,9 @@ func IsHighSeverity(err error) bool
 
 ---
 
-## 14. 状态管理设计（v1.0改进）
+## 14. 状态管理设计
 
-VoidBus v1.0 采用单一状态枚举代替多个布尔标志，简化状态管理并确保状态转换清晰。
+VoidBus 采用单一状态枚举管理 Bus 状态，通过明确的转换规则确保状态一致性。
 
 ### 14.1 状态枚举定义
 
@@ -874,14 +874,14 @@ StateIdle → StateRunning → (Accept 创建 clientBus in StateConnected)
 | StateRunning | StateClosed | 所有其他状态 |
 | StateClosed | 无（禁止转换） | 所有状态 |
 
-### 14.3 状态管理实现（v1.0 更新）
+### 14.3 状态管理实现
 
-**重要变更（2026-04-03）**: 为避免双重加锁死锁，setState() 方法已改为**要求外部持锁**。
+**设计决策**: setState() 方法要求外部持锁，避免双重加锁死锁。
 
 ```go
-// Bus 结构体改进
+// Bus 结构体
 type Bus struct {
-    state atomic.Int32  // 单一状态变量（代替三个 atomic.Bool）
+    state atomic.Int32  // 单一状态变量
     
     // 其他字段不变
     mu     sync.RWMutex
@@ -942,7 +942,7 @@ func (b *Bus) isClosed() bool {
 }
 ```
 
-**锁使用原则（已更新）**:
+**锁使用原则**:
 
 | 方法 | 锁要求 | 说明 |
 |------|--------|------|
@@ -950,7 +950,7 @@ func (b *Bus) isClosed() bool {
 | getState() | 无锁 | 使用 atomic.Load() |
 | isRunning(), isNegotiated(), isClosed() | 无锁 | 使用 atomic.Load() |
 
-**已修复的方法（持锁调用 setState）**:
+**关键方法（持锁调用 setState）**:
 - dialWithChannel: 开始时持锁，所有 setState 调用在持锁状态下进行
 - Listen: 开始时持锁，所有 setState 调用在持锁状态下进行
 - Stop: 开始时持锁，setState 调用在持锁状态下进行
@@ -993,30 +993,20 @@ listener.Accept()
 
 ---
 
-## 15. Module 接口类型安全（v1.0改进）
+## 15. Module 接口类型安全设计
 
-VoidBus v1.0 优化 Module 接口定义，将 `interface{}` 参数替换为明确的具体类型，确保编译时类型检查。
+VoidBus Module 接口定义采用明确类型，将 `interface{}` 参数替换为具体类型，确保编译时类型检查。
 
-### 15.1 改进原则
+### 15.1 设计原则
 
 - **类型安全**: 所有接口参数和返回值使用具体类型，避免运行时类型断言
 - **编译时检查**: 类型错误在编译时发现，而非运行时
 - **向后兼容**: 接口语义不变，仅替换类型定义
 
-### 15.2 CodecModule 接口改进
+### 15.2 CodecModule 接口定义
 
-**改进前**（使用 interface{}）：
-```go
-type CodecModule interface {
-    Module
-    
-    AddCodec(codec interface{}, code string) error
-    RandomSelect() (codes []string, chain interface{}, err error)
-    MatchByHash(hash [32]byte) (codes []string, chain interface{}, err error)
-}
-```
+VoidBus CodecModule 接口采用明确的类型定义：
 
-**改进后**（使用具体类型）：
 ```go
 type CodecModule interface {
     Module
@@ -1030,20 +1020,10 @@ type CodecModule interface {
 }
 ```
 
-### 15.3 ChannelModule 接口改进
+### 15.3 ChannelModule 接口定义
 
-**改进前**：
-```go
-type ChannelModule interface {
-    Module
-    
-    AddChannel(channel interface{}, id string) error
-    RandomSelect() (interface{}, error)
-    SelectHealthy() (interface{}, error)
-}
-```
+VoidBus ChannelModule 接口采用明确的类型定义：
 
-**改进后**：
 ```go
 type ChannelModule interface {
     Module
@@ -1057,24 +1037,27 @@ type ChannelModule interface {
 }
 ```
 
-### 15.4 FragmentModule 和 SessionModule 改进
+### 15.4 FragmentModule 和 SessionModule 设计
 
-类似的改进应用于 FragmentModule 和 SessionModule，所有 `interface{}` 参数替换为具体类型（fragment.Buffer、session.Session 等）。
+FragmentModule 和 SessionModule 采用相同的设计原则：
+
+- FragmentModule: 所有参数使用 `fragment.Buffer` 等具体类型
+- SessionModule: 所有参数使用 `session.Session` 等具体类型
 
 ### 15.5 类型安全收益
 
-| 方面 | 改进前 | 改进后 |
-|------|--------|--------|
-| 类型检查 | 运行时断言 | 编译时检查 |
-| 错误发现 | 运行时 panic | 编译时错误 |
-| IDE 支持 | 无法推断类型 | 完整类型推断 |
-| 维护成本 | 类型断言代码 | 无额外代码 |
+| 方面 | 设计价值 |
+|------|----------|
+| 类型检查 | 编译时检查，避免运行时类型断言错误 |
+| 错误发现 | 编译时发现类型错误，而非运行时 panic |
+| IDE 支持 | 完整类型推断，提升开发效率 |
+| 维护成本 | 无类型断言代码，代码简洁清晰 |
 
 ---
 
-## 16. 未采纳的改进方案
+## 16. 未采纳的设计方案
 
-以下改进方案经过架构分析，但决定暂不实施或不需要实施：
+以下设计方案经过架构分析，但决定暂不实施或不需要实施：
 
 ### 16.1 goroutine 数量限制
 
