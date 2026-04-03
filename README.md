@@ -1,8 +1,8 @@
 # VoidBus
 
-VoidBus 是一个高度模块化、可组合的隐蔽通信总线库，实现信道与编解码的完全分离，支持任意组合和更换。
+VoidBus is a highly modular and composable covert communication bus library that achieves complete separation of channels and encoding/decoding, supporting arbitrary combinations and replacements.
 
-## 架构图
+## Architecture Diagram
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -40,30 +40,30 @@ VoidBus 是一个高度模块化、可组合的隐蔽通信总线库，实现信
               │ Negotiate Channel        │ Data Channel
               │ (WebSocket)              │ (TCP/UDP/WS)
               │                          │
-┌─────────────▼──────────────────────────▼───────────────┐
-│                   Channel Layer                        │
-│                                                        │
-│  ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐                    │
-│  │TCP │ │ WS │ │UDP │ │ICMP│ │DNS │                    │
-│  │Rel.│ │Rel.│ │Unre│ │Unre│ │Unre│                    │
-│  └────┘ └────┘ └────┘ └────┘ └────┘                    │
-│                                                        │
-└───────────────────────────────┬────────────────────────┘
+┌─────────────▼──────────────────────────▼────────────────┐
+│                   Channel Layer                          │
+│                                                          │
+│  ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐                   │
+│  │TCP │ │ WS │ │UDP │ │ICMP│ │DNS │                   │
+│  │Rel.│ │Rel.│ │Unre│ │Unre│ │Unre│                   │
+│  └────┘ └────┘ └────┘ └────┘ └────┘                   │
+│                                                          │
+└───────────────────────────────┬─────────────────────────┘
                                 │
                                 │ Network Transport
                                 │
-┌───────────────────────────────▼──────────────────────────┐
+┌───────────────────────────────▼─────────────────────────┐
 │                      Remote Peer                         │
-└──────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────┘
 
 Send Flow:    Raw Data → Codec Encode → Fragment → Multi-Channel → Network
 Receive Flow: Network → Reassemble → Codec Decode → Raw Data
 Negotiation:  WebSocket → Bitmap Exchange → Channel/Codec Match
 ```
 
-## 快速开始
+## Quick Start
 
-### Client 端示例
+### Client Example
 
 ```go
 package main
@@ -80,44 +80,44 @@ import (
 )
 
 func main() {
-    // 1. 创建Bus实例
+    // 1. Create Bus instance
     bus, err := voidbus.New(nil)
     if err != nil {
         panic(err)
     }
     defer bus.Stop()
 
-    // 2. 设置密钥 (AES-256需要32字节密钥)
+    // 2. Set encryption key (AES-256 requires 32-byte key)
     key := []byte("32-byte-secret-key-for-aes-256!!")
     if err := bus.SetKey(key); err != nil {
         panic(err)
     }
 
-    // 3. 注册Codec (用户自定义代号，需双端一致)
-    bus.RegisterCodec(aes.NewAES256Codec())    // 代号: "aes"
-    bus.RegisterCodec(base64.New())            // 代号: "base64"
+    // 3. Register Codec (user-defined code, must match on both ends)
+    bus.RegisterCodec(aes.NewAES256Codec())    // code: "aes"
+    bus.RegisterCodec(base64.New())            // code: "base64"
 
-    // 4. 添加信道
+    // 4. Add channel
     bus.AddChannel(ws.NewClientChannel(channel.ChannelConfig{
         Address:        "ws://localhost:8080/ws",
         ConnectTimeout: 10 * time.Second,
     }))
 
-    // 5. 建立连接 (自动协商)
+    // 5. Establish connection (auto negotiation)
     conn, err := bus.Dial()
     if err != nil {
         panic(err)
     }
     defer conn.Close()
 
-    // 6. 发送消息
+    // 6. Send message
     message := []byte("Hello, VoidBus!")
     if _, err := conn.Write(message); err != nil {
         panic(err)
     }
     fmt.Printf("Sent: %s\n", message)
 
-    // 7. 接收消息
+    // 7. Receive message
     buf := make([]byte, 4096)
     n, err := conn.Read(buf)
     if err != nil {
@@ -127,7 +127,7 @@ func main() {
 }
 ```
 
-### Server 端示例
+### Server Example
 
 ```go
 package main
@@ -135,6 +135,7 @@ package main
 import (
     "fmt"
     "io"
+    "net"
     
     voidbus "github.com/Script-OS/VoidBus"
     "github.com/Script-OS/VoidBus/channel"
@@ -144,29 +145,29 @@ import (
 )
 
 func main() {
-    // 1. 创建Bus实例
+    // 1. Create Bus instance
     bus, err := voidbus.New(nil)
     if err != nil {
         panic(err)
     }
     defer bus.Stop()
 
-    // 2. 设置密钥 (需与Client一致)
+    // 2. Set encryption key (must match client)
     key := []byte("32-byte-secret-key-for-aes-256!!")
     if err := bus.SetKey(key); err != nil {
         panic(err)
     }
 
-    // 3. 注册Codec (需与Client一致)
+    // 3. Register Codec (must match client)
     bus.RegisterCodec(aes.NewAES256Codec())
     bus.RegisterCodec(base64.New())
 
-    // 4. 添加Server信道
+    // 4. Add server channel
     bus.AddChannel(ws.NewServerChannel(channel.ChannelConfig{
         Address: ":8080",
     }))
 
-    // 5. 启动监听 (聚合所有信道)
+    // 5. Start listening (aggregates all channels)
     listener, err := bus.Listen()
     if err != nil {
         panic(err)
@@ -175,7 +176,7 @@ func main() {
 
     fmt.Println("Server listening on :8080")
 
-    // 6. 接受连接
+    // 6. Accept connections
     for {
         conn, err := listener.Accept()
         if err != nil {
@@ -192,7 +193,7 @@ func handleConnection(conn net.Conn) {
 
     buf := make([]byte, 4096)
     for {
-        // 接收消息
+        // Receive message
         n, err := conn.Read(buf)
         if err != nil {
             if err == io.EOF {
@@ -205,7 +206,7 @@ func handleConnection(conn net.Conn) {
 
         fmt.Printf("Received: %s\n", buf[:n])
 
-        // 回显消息
+        // Echo message back
         if _, err := conn.Write(buf[:n]); err != nil {
             fmt.Printf("Write error: %v\n", err)
             return
@@ -214,157 +215,157 @@ func handleConnection(conn net.Conn) {
 }
 ```
 
-### 运行示例
+### Run Examples
 
 ```bash
-# 启动Server
+# Start server
 go run server.go
 
-# 在另一个终端启动Client
+# In another terminal, start client
 go run client.go
 ```
 
-## 核心特性
+## Core Features
 
-- **三层分离架构**：Codec（编解码）+ Channel（信道）+ Fragment（分片）- 用户自行序列化
-- **Codec链式组合**：支持多个Codec按顺序组合，用户自定义代号标识
-- **可插拔架构**：所有模块通过接口定义，支持自定义实现
-- **双向全双工通信**：Server侧可同时向多个客户端接收和发送信息
-- **分片多信道传输**：支持数据分片，通过不同信道/编码组合发送
-- **隐蔽信道设计**：支持WebSocket（默认）、TCP、UDP等多种信道
-- **Bitmap协商协议**：二进制格式协商可用信道和Codec（非明文）
-- **信道健康度评估**：基于健康度加权随机选择信道，故障自动切换
-- **可靠/不可靠信道区分**：可靠信道信任协议，不可靠信道实现ACK/NAK重传
+- **Three-Layer Separation Architecture**: Codec (encoding/decoding) + Channel (communication) + Fragment (splitting) - user handles serialization
+- **Codec Chain Composition**: Supports multiple Codec combinations in sequence, with user-defined code identifiers
+- **Pluggable Architecture**: All modules defined through interfaces, supporting custom implementations
+- **Bidirectional Full-Duplex Communication**: Server can simultaneously receive and send information to multiple clients
+- **Fragmented Multi-Channel Transmission**: Supports data fragmentation, sending through different channel/encoding combinations
+- **Covert Channel Design**: Supports WebSocket (default), TCP, UDP, and other channels
+- **Bitmap Negotiation Protocol**: Binary format negotiation for available channels and codecs (non-plaintext)
+- **Channel Health Assessment**: Health-weighted random channel selection, automatic failover on failure
+- **Reliable/Unreliable Channel Differentiation**: Reliable channels trust protocol reliability, unreliable channels implement ACK/NAK retransmission
 
-## 目录结构
+## Directory Structure
 
 ```
 VoidBus/
-├── bus.go              # Bus核心实现（统一入口）
-├── module.go           # Module接口定义
-├── config.go           # BusConfig配置
-├── errors.go           # 统一错误定义（含EnhancedVoidBusError）
+├── bus.go              # Bus core implementation (unified entry point)
+├── module.go           # Module interface definition
+├── config.go           # BusConfig configuration
+├── errors.go           # Unified error definitions
 │
-├── negotiate/          # 协商模块 [隐蔽信道核心]
-│   ├── interface.go    # Negotiator接口定义
-│   ├── frame.go        # NegotiateRequest/Response帧编解码
-│   ├── codec_bitmap.go # Codec Bitmap定义
-│   ├── channel_bitmap.go # Channel Bitmap定义
-│   ├── client_negotiator.go # Client协商器
-│   ├── server_negotiator.go # Server协商器 + SessionManager
-│   └── negotiate_test.go # 协商模块测试
+├── negotiate/          # Negotiation module [core covert channel]
+│   ├── interface.go    # Negotiator interface definition
+│   ├── frame.go        # NegotiateRequest/Response frame encoding/decoding
+│   ├── codec_bitmap.go # Codec Bitmap definition
+│   ├── channel_bitmap.go # Channel Bitmap definition
+│   ├── client_negotiator.go # Client negotiator
+│   ├── server_negotiator.go # Server negotiator + SessionManager
+│   └ negotiate_test.go # Negotiation module tests
 │
-├── protocol/           # 协议层
-│   ├── header.go       # Header结构 + 安全验证
-│   └── header_test.go  # Header安全验证测试
+├── protocol/           # Protocol layer
+│   ├── header.go       # Header structure + security validation
+│   └── header_test.go  # Header security validation tests
 │
-├── codec/              # 编解码模块 [不可暴露]
-│   ├── interface.go    # Codec接口定义 + Code()方法
-│   ├── manager.go      # CodecManager（用户自定义代号）
-│   ├── chain.go        # CodecChain实现
-│   ├── chain_test.go   # CodecChain测试
-│   ├── plain/          # Pass-through（仅调试）
-│   ├── base64/         # Base64编码
-│   ├── aes/            # AES-GCM加密
-│   ├── xor/            # XOR编码
-│   ├── chacha20/       # ChaCha20-Poly1305加密
-│   └── rsa/            # RSA-OAEP加密
+├── codec/              # Encoding/decoding module [not exposed]
+│   ├── interface.go    # Codec interface definition + Code() method
+│   ├── manager.go      # CodecManager (user-defined codes)
+│   ├── chain.go        # CodecChain implementation
+│   ├── chain_test.go   # CodecChain tests
+│   ├── plain/          # Pass-through (debug only)
+│   ├── base64/         # Base64 encoding
+│   ├── aes/            # AES-GCM encryption
+│   ├── xor/            # XOR encoding
+│   ├── chacha20/       # ChaCha20-Poly1305 encryption
+│   └── rsa/            # RSA-OAEP encryption
 │
-├── channel/            # 信道模块 [不可暴露]
-│   ├── interface.go    # Channel接口定义 + IsReliable()
-│   ├── pool.go         # ChannelPool（健康度加权随机选择）
-│   ├── tcp/            # TCP传输（可靠）
-│   ├── ws/             # WebSocket传输（可靠，默认协商信道）
-│   └── udp/            # UDP传输（不可靠，ACK/NAK重传）
+├── channel/            # Channel module [not exposed]
+│   ├── interface.go    # Channel interface definition + IsReliable()
+│   ├── pool.go         # ChannelPool (health-weighted random selection)
+│   ├── tcp/            # TCP transmission (reliable)
+│   ├── ws/             # WebSocket transmission (reliable, default negotiation channel)
+│   └── udp/            # UDP transmission (unreliable, ACK/NAK retransmission)
 │
-├── fragment/           # 分片模块
+├── fragment/           # Fragment module
 │   ├── manager.go      # FragmentManager
 │   └── buffer.go       # SendBuffer/RecvBuffer
 │
-├── session/            # Session模块
+├── session/            # Session module
 │   ├── manager.go      # SessionManager
-│   └── session.go      # Session定义
+│   └── session.go      # Session definition
 │
-├── keyprovider/        # 密钥提供者 [不可暴露]
-│   └── embedded/       # 编译时嵌入密钥
+├── keyprovider/        # Key provider [not exposed]
+│   └── embedded/       # Compile-time embedded key
 │
-├── internal/           # 内部工具（不对外暴露）
-│   ├── hash.go         # Hash计算 + HashCache
-│   ├── id.go           # ID生成 + RandomIntRange
-│   ├── checksum.go     # CRC16/CRC32校验
-│   └── *_test.go       # 内部工具测试
+├── internal/           # Internal utilities (not exposed externally)
+│   ├── hash.go         # Hash computation + HashCache
+│   ├── id.go           # ID generation + RandomIntRange
+│   ├── checksum.go     # CRC16/CRC32 checksum
+│   └ *_test.go         # Internal utility tests
 │
-├── tests/              # 测试归档目录
-│   ├── mock/           # Mock实现（依赖注入测试）
-│   │   └ mocks.go      # MockCodecManager/MockFragmentManager等
-│   └ README.md         # 测试说明文档
+├── tests/              # Test archive directory
+│   ├── mock/           # Mock implementations (dependency injection testing)
+│   │   └ mocks.go      # MockCodecManager/MockFragmentManager etc.
+│   └ README.md         # Test documentation
 │
-├── docs/               # 文档
-│   ├── ARCHITECTURE.md # 架构设计文档
-│   └── INTERFACE.md    # 接口详细说明
+├── docs/               # Documentation
+│   ├── ARCHITECTURE.md # Architecture design document
+│   └ INTERFACE.md      # Interface detailed specification
 │
-├── bus_test.go         # Bus核心测试
-├── errors_test.go      # 错误处理测试
-├── benchmark_test.go   # 性能基准测试（19 benchmarks）
-└── README.md           # 项目说明
+├── bus_test.go         # Bus core tests
+├── errors_test.go      # Error handling tests
+├── benchmark_test.go   # Performance benchmarks (19 benchmarks)
+└── README.md           # Project documentation
 ```
 
-## 安全边界
+## Security Boundaries
 
-| 模块 | 可暴露性 | 说明 |
-|------|----------|------|
-| Codec | ❌ 不可暴露 | 编解码方式不可暴露，仅通过CodecHash间接引用 |
-| Channel | ❌ 不可暴露 | 信道类型不可暴露 |
-| KeyProvider | ❌ 不可暴露 | 密钥相关信息不可暴露 |
-| Codec Hash | ✅ 可暴露 | SHA256(代号组合)，不暴露具体组合 |
+| Module | Exposure | Description |
+|--------|----------|-------------|
+| Codec | ❌ Not exposed | Encoding/decoding method not exposed, referenced indirectly via CodecHash |
+| Channel | ❌ Not exposed | Channel type not exposed |
+| KeyProvider | ❌ Not exposed | Key-related information not exposed |
+| Codec Hash | ✅ Exposed | SHA256(code combination), doesn't expose specific combination |
 
-## 数据流
+## Data Flow
 
-### 协商流程
+### Negotiation Flow
 ```
-Client通过默认信道（WebSocket）发送NegotiateRequest
-  → Server计算交集（Channel Bitmap & Codec Bitmap）
-  → Server返回NegotiateResponse（可用信道 + Codec + SessionID）
-  → 双方基于Bitmap动态组合Codec链
-```
-
-### 发送流程
-```
-原始数据（用户自行序列化）
-  → CodecManager.SelectChain() → 随机选择Codec组合（用户自定义代号）
-  → CodecChain.Encode() → 编码/加密数据
-  → FragmentManager.AdaptiveSplit() → 分片数据（自适应MTU）
-  → ChannelPool.SelectChannel() → 健康度加权随机选择
-  → Channel.Send() → 网络传输
-    ├─ 可靠信道（TCP/WS）: 信任协议可靠性
-    └─ 不可靠信道（UDP）: ACK/NAK重传机制
+Client sends NegotiateRequest via default channel (WebSocket)
+  → Server calculates intersection (Channel Bitmap & Codec Bitmap)
+  → Server returns NegotiateResponse (available channels + Codec + SessionID)
+  → Both sides dynamically compose Codec chain based on Bitmap
 ```
 
-### 接收流程
+### Send Flow
 ```
-Channel.Receive() → 原始网络数据
-  → DecodeHeader() → 安全验证 + 解析Header
-  → CodecManager.MatchChain(Hash) → 匹配Codec组合
-  → FragmentManager.AddFragment() → 分片缓存
-  → FragmentManager.Reassemble() → 完整数据
-  → CodecChain.Decode() → 解码数据
-  → 用户自行反序列化 → 原始数据
+Raw data (user serialization)
+  → CodecManager.SelectChain() → Randomly select Codec combination (user-defined codes)
+  → CodecChain.Encode() → Encode/encrypt data
+  → FragmentManager.AdaptiveSplit() → Split data (adaptive MTU)
+  → ChannelPool.SelectChannel() → Health-weighted random selection
+  → Channel.Send() → Network transmission
+    ├─ Reliable channel (TCP/WS): Trust protocol reliability
+    └─ Unreliable channel (UDP): ACK/NAK retransmission mechanism
 ```
 
-### 故障切换
+### Receive Flow
 ```
-Channel.Send()超时3s无ACK
+Channel.Receive() → Raw network data
+  → DecodeHeader() → Security validation + Header parsing
+  → CodecManager.MatchChain(Hash) → Match Codec combination
+  → FragmentManager.AddFragment() → Fragment caching
+  → FragmentManager.Reassemble() → Complete data
+  → CodecChain.Decode() → Decode data
+  → User deserialization → Raw data
+```
+
+### Failover Flow
+```
+Channel.Send() timeout 3s without ACK
   → ChannelPool.MarkUnavailable(chType)
   → FragmentManager.GetPendingFragments()
-  → ChannelPool.SelectChannel(exclude=[不可用])
-  → 新信道重新发送
+  → ChannelPool.SelectChannel(exclude=[unavailable])
+  → New channel resend
 ```
 
-## 协商协议
+## Negotiation Protocol
 
-VoidBus 使用二进制Bitmap格式协商（非明文）：
+VoidBus uses binary Bitmap format for negotiation (non-plaintext):
 
-### NegotiateRequest帧格式
+### NegotiateRequest Frame Format
 ```
 [1 byte: Magic 0x56] [1 byte: Version]
 [1 byte: ChCount] [N bytes: ChannelBitmap]
@@ -374,7 +375,7 @@ VoidBus 使用二进制Bitmap格式协商（非明文）：
 [2 bytes: CRC16]
 ```
 
-### NegotiateResponse帧格式
+### NegotiateResponse Frame Format
 ```
 [1 byte: Magic 0x42] [1 byte: Version]
 [1 byte: ChCount] [N bytes: ChannelBitmap]
@@ -384,18 +385,18 @@ VoidBus 使用二进制Bitmap格式协商（非明文）：
 [2 bytes: CRC16]
 ```
 
-### Channel可靠性
-| Channel | IsReliable | 说明 |
-|---------|------------|------|
-| WebSocket | ✅ | 默认协商信道，易穿透防火墙 |
-| TCP | ✅ | 可靠传输 |
-| UDP | ❌ | 需ACK/NAK重传（3s超时） |
-| ICMP | ❌ | 需可靠重传 |
-| DNS | ❌ | 需可靠重传 |
+### Channel Reliability
+| Channel | IsReliable | Description |
+|---------|------------|-------------|
+| WebSocket | ✅ | Default negotiation channel, firewall-friendly |
+| TCP | ✅ | Reliable transmission |
+| UDP | ❌ | Requires ACK/NAK retransmission (3s timeout) |
+| ICMP | ❌ | Requires reliable retransmission |
+| DNS | ❌ | Requires reliable retransmission |
 
-## 快速开始
+## Quick Start
 
-### 基本使用
+### Basic Usage
 
 ```go
 import (
@@ -408,24 +409,24 @@ import (
 )
 
 func main() {
-    // 1. 创建Bus
+    // 1. Create Bus
     bus, err := voidbus.New(nil)
     if err != nil {
         panic(err)
     }
     defer bus.Stop()
 
-    // 2. 设置密钥
+    // 2. Set key
     key := []byte("32-byte-secret-key-for-aes-256!!")
     if err := bus.SetKey(key); err != nil {
         panic(err)
     }
 
-    // 3. 注册Codec（用户自定义代号，需收发双端一致）
-    bus.RegisterCodec(aes.NewAES256Codec())   // 自动使用 codec.Code() = "aes"
-    bus.RegisterCodec(base64.New())           // 自动使用 codec.Code() = "base64"
+    // 3. Register Codec (user-defined code, must match on both ends)
+    bus.RegisterCodec(aes.NewAES256Codec())   // Automatically uses codec.Code() = "aes"
+    bus.RegisterCodec(base64.New())           // Automatically uses codec.Code() = "base64"
 
-    // 4. 添加Channel - 支持多信道同时连接
+    // 4. Add Channel - supports multiple channels simultaneously
     bus.AddChannel(ws.NewClientChannel(channel.ChannelConfig{
         Address:        "ws://localhost:8080/ws",
         ConnectTimeout: 10 * time.Second,
@@ -435,20 +436,20 @@ func main() {
         ConnectTimeout: 10 * time.Second,
     }))
 
-    // 5. Dial - 自动协商，使用所有注册的channel
+    // 5. Dial - auto negotiation, uses all registered channels
     conn, err := bus.Dial()
     if err != nil {
         panic(err)
     }
     defer conn.Close()
 
-    // 6. 发送数据（消息式语义）
+    // 6. Send data (message semantics)
     data := []byte("Hello, VoidBus!")
     if _, err := conn.Write(data); err != nil {
         panic(err)
     }
 
-    // 7. 接收数据（返回完整消息）
+    // 7. Receive data (returns complete message)
     buf := make([]byte, 4096)
     n, err := conn.Read(buf)
     if err != nil {
@@ -458,7 +459,7 @@ func main() {
 }
 ```
 
-### Server 端
+### Server Side
 
 ```go
 import (
@@ -473,20 +474,20 @@ func main() {
     bus, _ := voidbus.New(nil)
     bus.SetKey([]byte("32-byte-secret-key-for-aes-256!!"))
 
-    // 注册Codec
+    // Register Codec
     bus.RegisterCodec(aes.NewAES256Codec())
     bus.RegisterCodec(base64.New())
 
-    // 添加所有Server Channel - Listener会聚合它们
+    // Add all Server Channels - Listener aggregates them
     bus.AddChannel(tcp.NewServerChannel(channel.ChannelConfig{Address: ":8080"}))
     bus.AddChannel(ws.NewServerChannel(channel.ChannelConfig{Address: ":8081"}))
     bus.AddChannel(udp.NewServerChannel(channel.ChannelConfig{Address: ":8082"}))
 
-    // Listen - 聚合所有channel，支持多信道Session
+    // Listen - aggregates all channels, supports multi-channel Session
     listener, _ := bus.Listen()
     defer listener.Close()
 
-    // Accept循环 - 每个连接已关联所有channel
+    // Accept loop - each connection is associated with all channels
     for {
         conn, _ := listener.Accept()
         go handleClient(conn)
@@ -494,97 +495,98 @@ func main() {
 }
 ```
 
-### 自动Bitmap生成
+### Automatic Bitmap Generation
 
-协商时，Bitmap**自动**从注册的Codec和Channel生成：
+During negotiation, Bitmap is **automatically** generated from registered Codec and Channel:
 
 ```go
-// 注册Codec后，CodecBitmap自动包含对应的bit
-bus.RegisterCodec(aes.NewAES256Codec())  // 自动设置 CodecBitAES256
-bus.RegisterCodec(base64.New())          // 自动设置 CodecBitBase64
+// After registering Codec, CodecBitmap automatically includes corresponding bit
+bus.RegisterCodec(aes.NewAES256Codec())  // Automatically sets CodecBitAES256
+bus.RegisterCodec(base64.New())          // Automatically sets CodecBitBase64
 
-// 添加Channel后，ChannelBitmap自动包含对应的bit
-bus.AddChannel(ws.NewClientChannel(...))  // 自动设置 ChannelBitWS
-bus.AddChannel(tcp.NewClientChannel(...)) // 自动设置 ChannelBitTCP
-bus.AddChannel(udp.NewClientChannel(...)) // 自动设置 ChannelBitUDP
+// After adding Channel, ChannelBitmap automatically includes corresponding bit
+bus.AddChannel(ws.NewClientChannel(...))  // Automatically sets ChannelBitWS
+bus.AddChannel(tcp.NewClientChannel(...)) // Automatically sets ChannelBitTCP
+bus.AddChannel(udp.NewClientChannel(...)) // Automatically sets ChannelBitUDP
 
-// Dial/Listen时自动协商，无需手动创建请求
-conn, _ := bus.Dial()                     // 自动发送NegotiateRequest
-listener, _ := bus.Listen()               // 自动接收并处理NegotiateRequest
+// Auto negotiation during Dial/Listen, no manual request creation needed
+conn, _ := bus.Dial()                     // Automatically sends NegotiateRequest
+listener, _ := bus.Listen()               // Automatically receives and handles NegotiateRequest
 ```
 
-### 多信道分布原理
+### Multi-Channel Distribution Principle
 
-VoidBus 支持**同时使用多个channel**，分片随机分布：
+VoidBus supports **using multiple channels simultaneously**, with random fragment distribution:
 
-1. **Client Dial**：通过第一个channel协商，获取SessionID，后续channel异步协商并关联
-2. **Server Accept**：第一个channel连接时立即返回，后续channel动态添加到Session
-3. **分片发送**：每个分片独立调用 ChannelPool.SelectChannel()，健康权重随机选择
-4. **分片接收**：所有channel的receiveLoop汇总到同一个recvQueue
+1. **Client Dial**: Negotiates via first channel, gets SessionID, subsequent channels asynchronously negotiate and associate
+2. **Server Accept**: First channel connection returns immediately, subsequent channels dynamically added to Session
+3. **Fragment Sending**: Each fragment independently calls ChannelPool.SelectChannel(), health-weighted random selection
+4. **Fragment Receiving**: All channel receive loops aggregate to the same recvQueue
 
-详见 [example/README.md](example/README.md)
+See [example/README.md](example/README.md) for details.
 
-## 安全等级
+## Security Levels
 
-| 等级 | 值 | 示例 |
-|------|----|----|
-| None | 0 | Plain Codec（仅调试模式） |
-| Low | 1 | XOR, Base64编码 |
+| Level | Value | Examples |
+|-------|-------|----------|
+| None | 0 | Plain Codec (debug mode only) |
+| Low | 1 | XOR, Base64 encoding |
 | Medium | 2 | AES-128-GCM, ChaCha20 |
 | High | 3 | AES-256-GCM, RSA |
 
-**Release模式**: 最小安全等级为 Medium，禁止使用 Plain Codec。
+**Release Mode**: Minimum security level is Medium, Plain Codec prohibited.
 
-## 测试覆盖率
+## Test Coverage
 
-| 模块 | 覆盖率 | 说明 |
-|------|--------|------|
-| bus.go | 32.5% | 核心入口测试 |
-| protocol/header.go | 89.3% | 安全验证测试 |
-| negotiate | 79.5% | 协商协议测试（64个测试用例） |
-| errors.go | 高 | 错误处理测试 |
-| codec/aes | 81.7% | AES编解码测试 |
-| codec/base64 | 95.2% | Base64编解码测试 |
-| codec/plain | 94.7% | Plain编解码测试 |
-| channel/ws | 高 | WebSocket信道测试 |
-| channel/udp | 高 | UDP可靠重传测试 |
+| Module | Coverage | Description |
+|--------|----------|-------------|
+| bus.go | 32.5% | Core entry tests |
+| protocol/header.go | 89.3% | Security validation tests |
+| negotiate | 79.5% | Negotiation protocol tests (64 test cases) |
+| errors.go | High | Error handling tests |
+| codec/aes | 81.7% | AES encoding/decoding tests |
+| codec/base64 | 95.2% | Base64 encoding/decoding tests |
+| codec/plain | 94.7% | Plain encoding/decoding tests |
+| channel/ws | High | WebSocket channel tests |
+| channel/udp | High | UDP reliable retransmission tests |
 
-## 模块文档
+## Module Documentation
 
-- [example/](example/README.md) - 交互式示例（多channel + 多codec）
-- [negotiate/](negotiate/README.md) - 协商模块（Bitmap协议）
-- [codec/](codec/README.md) - 编解码模块
-- [channel/](channel/README.md) - 信道模块
-- [fragment/](fragment/README.md) - 分片模块
-- [session/](session/README.md) - Session模块
-- [protocol/](protocol/README.md) - 协议层
-- [keyprovider/](keyprovider/embedded/README.md) - 密钥提供者
-- [tests/](tests/README.md) - 测试说明
+- [example/](example/README.md) - Interactive examples (multi-channel + multi-codec)
+- [negotiate/](negotiate/README.md) - Negotiation module (Bitmap protocol)
+- [codec/](codec/README.md) - Encoding/decoding module
+- [channel/](channel/README.md) - Channel module
+- [fragment/](fragment/README.md) - Fragment module
+- [session/](session/README.md) - Session module
+- [protocol/](protocol/README.md) - Protocol layer
+- [keyprovider/](keyprovider/embedded/README.md) - Key provider
+- [tests/](tests/README.md) - Test documentation
 
-## 详细文档
+## Detailed Documentation
 
-- [架构设计文档](docs/ARCHITECTURE.md)
-- [接口详细说明](docs/INTERFACE.md)
+- [Architecture Design Document](docs/ARCHITECTURE.md)
+- [Interface Detailed Specification](docs/INTERFACE.md)
+- [Chinese Documentation](README_ZH.md)
 
-## 编译与测试
+## Build and Test
 
 ```bash
-# 编译所有模块
+# Build all modules
 go build ./...
 
-# 运行所有测试
+# Run all tests
 go test ./...
 
-# 运行测试并显示覆盖率
+# Run tests with coverage
 go test -cover ./...
 
-# 运行性能基准测试
+# Run performance benchmarks
 go test -bench=. -benchmem ./...
 
-# 运行特定模块测试
+# Run specific module tests
 go test -v ./protocol/...
 ```
 
-## 许可证
+## License
 
 MIT License
