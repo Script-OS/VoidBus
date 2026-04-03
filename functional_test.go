@@ -505,8 +505,9 @@ func resetTestPort() {
 // This test verifies that fragments are actually distributed across multiple channels.
 
 func TestFunctional_TrueMultiChannel_Distribution(t *testing.T) {
-	// Allocate ports
-	basePort := getTestPort()
+	// Allocate ports - use higher range to avoid conflicts
+	// Skip the normal test port allocation to ensure no conflicts
+	basePort := 10000 // Use ports 10000, 10001, 10002 for this special test
 	tcpPort := basePort
 	wsPort := basePort + 1
 	udpPort := basePort + 2

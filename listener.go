@@ -334,17 +334,25 @@ func (l *voidBusListener) handleClient(channelID string, clientCh channel.Channe
 	// 11. Add channel to session
 	session.AddChannel(channelBit, newChannelID, clientCh)
 
-	// 12. Start receive loop for this channel immediately
-	// Get ChannelInfo from pool
-	if info, err := clientBus.channelPool.GetChannel(newChannelID); err == nil {
-		clientBus.wg.Add(1)
-		go clientBus.receiveLoop(info)
+	// 12. For first connection: start receiveLoop in startClientBusAndReturnConnWithBridge (after bridgeReceive)
+	// For subsequent connections: start receiveLoop immediately
+	if !isFirstConnection {
+		// Get ChannelInfo from pool
+		if info, err := clientBus.channelPool.GetChannel(newChannelID); err == nil {
+			clientBus.wg.Add(1)
+			go clientBus.receiveLoop(info)
+		}
 	}
 
 	// 13. For first connection: start bus and return conn immediately
 	// For subsequent connections: channel is already added, just need receive loop
 	if isFirstConnection {
-		l.startClientBusAndReturnConn(session, clientBus, newChannelID, clientCh.Type())
+		// CRITICAL: Start bridgeReceive BEFORE receiveLoop to prevent data loss
+		// Create receive channel for complete messages
+		recvChan := make(chan []byte, 100)
+
+		// Start client bus and return conn (will start receiveLoop inside)
+		l.startClientBusAndReturnConnWithBridge(session, clientBus, newChannelID, clientCh.Type(), recvChan)
 	}
 }
 
@@ -368,23 +376,31 @@ func channelTypeToBit(chType channel.ChannelType) negotiate.ChannelBit {
 	}
 }
 
-// startClientBusAndReturnConn starts the client bus and returns the connection.
-// Note: receiveLoop for the channel should already be started in handleClient.
-func (l *voidBusListener) startClientBusAndReturnConn(session *negotiate.SessionState, clientBus *Bus, channelID string, chType channel.ChannelType) {
+// startClientBusAndReturnConnWithBridge starts the client bus and returns the connection.
+// CRITICAL: This method starts bridgeReceive BEFORE receiveLoop to prevent data loss.
+// Note: receiveLoop for the channel is started inside this method (not in handleClient).
+func (l *voidBusListener) startClientBusAndReturnConnWithBridge(session *negotiate.SessionState, clientBus *Bus, channelID string, chType channel.ChannelType, recvChan chan []byte) {
 	clientBus.mu.Lock()
 
-	// State transition: StateIdle -> StateNegotiated (skip StateConnected)
-	// Server-side clientBus is already negotiated during handleClient
+	// State transition: StateIdle -> StateConnected (ARCHITECTURE COMPLIANCE)
+	// Server-side clientBus must follow: StateIdle -> StateConnected -> StateNegotiated -> StateRunning
 	// Note: setState() requires external lock (updated in v3.0)
-	if err := clientBus.setState(StateNegotiated); err != nil {
-		// Should not happen for new bus, but handle error
+	if err := clientBus.setState(StateConnected); err != nil {
 		clientBus.mu.Unlock()
 		clientBus.Stop()
 		return
 	}
 
-	// Create receive channel for complete messages
-	recvChan := make(chan []byte, 100)
+	// State transition: StateConnected -> StateNegotiated
+	if err := clientBus.setState(StateNegotiated); err != nil {
+		clientBus.mu.Unlock()
+		clientBus.Stop()
+		return
+	}
+
+	// CRITICAL: Start bridgeReceive BEFORE receiveLoop to prevent data loss
+	// This ensures recvQueue has a receiver when data arrives
+	go l.bridgeReceive(clientBus, recvChan)
 
 	// State transition: StateNegotiated -> StateRunning
 	if err := clientBus.setState(StateRunning); err != nil {
@@ -398,6 +414,13 @@ func (l *voidBusListener) startClientBusAndReturnConn(session *negotiate.Session
 
 	go clientBus.nakBatchLoop()
 
+	// Now start receiveLoop for the initial channel (after bridgeReceive is already running)
+	// Get ChannelInfo from pool
+	if info, err := clientBus.channelPool.GetChannel(channelID); err == nil {
+		clientBus.wg.Add(1)
+		go clientBus.receiveLoop(info)
+	}
+
 	// Create VoidBusConn
 	conn := newVoidBusConn(clientBus, channelID, chType, recvChan)
 
@@ -409,9 +432,6 @@ func (l *voidBusListener) startClientBusAndReturnConn(session *negotiate.Session
 		conn.Close()
 		return
 	}
-
-	// Bridge bus receive to conn recvChan
-	go l.bridgeReceive(clientBus, recvChan)
 }
 
 // bridgeReceive bridges clientBus receive queue to conn recvChan.
