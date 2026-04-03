@@ -289,10 +289,10 @@ func (m *CodecManager) MatchChain(hash [32]byte) (CodecChain, error) {
 		return m.createChainFromCodes(codes), nil
 	}
 
-	// Try all combinations (fallback - should rarely happen)
+	// Try all combinations without repetition (matches SelectChain behavior)
 	codes := m.getAvailableCodes()
 	for depth := 1; depth <= m.maxDepth; depth++ {
-		combinations := generateCodeCombinations(codes, depth)
+		combinations := generateCodeCombinationsNoRepeat(codes, depth)
 		for _, combo := range combinations {
 			expectedHash := m.computeChainHash(combo)
 			if expectedHash == hash {
@@ -460,9 +460,9 @@ func (m *CodecManager) PreComputeHashes() error {
 
 	m.hashCache = make(map[uint32][]string)
 
-	// Compute all combinations up to maxDepth
+	// Compute all non-repeating combinations up to maxDepth (matches SelectChain behavior)
 	for depth := 1; depth <= m.maxDepth; depth++ {
-		combinations := generateCodeCombinations(codes, depth)
+		combinations := generateCodeCombinationsNoRepeat(codes, depth)
 		for _, combo := range combinations {
 			hash := m.computeChainHash(combo)
 			m.hashCache[hashToUint32(hash)] = combo
@@ -485,6 +485,8 @@ func isBitSet(bitmap []byte, bit int) bool {
 }
 
 // generateCodeCombinations generates all code combinations of given depth.
+// Note: This allows repetition (e.g., ["aes", "aes"]).
+// For non-repetitive combinations, use generateCodeCombinationsNoRepeat.
 func generateCodeCombinations(codes []string, depth int) [][]string {
 	if depth == 0 || len(codes) == 0 {
 		return [][]string{}
@@ -508,5 +510,45 @@ func generateCodeCombinations(codes []string, depth int) [][]string {
 		}
 	}
 
+	return result
+}
+
+// generateCodeCombinationsNoRepeat generates combinations without repetition.
+// This matches SelectChain's behavior which uses shuffled non-repeating selection.
+func generateCodeCombinationsNoRepeat(codes []string, depth int) [][]string {
+	if depth == 0 || len(codes) == 0 || depth > len(codes) {
+		return [][]string{}
+	}
+
+	if depth == 1 {
+		result := make([][]string, len(codes))
+		for i, code := range codes {
+			result[i] = []string{code}
+		}
+		return result
+	}
+
+	// Use recursive permutation generation without repetition
+	result := make([][]string, 0)
+	var generate func(current []string, remaining []string)
+	generate = func(current []string, remaining []string) {
+		if len(current) == depth {
+			combo := make([]string, len(current))
+			copy(combo, current)
+			result = append(result, combo)
+			return
+		}
+
+		for i, code := range remaining {
+			// Add code to current and remove from remaining
+			newCurrent := append(current, code)
+			newRemaining := make([]string, 0, len(remaining)-1)
+			newRemaining = append(newRemaining, remaining[:i]...)
+			newRemaining = append(newRemaining, remaining[i+1:]...)
+			generate(newCurrent, newRemaining)
+		}
+	}
+
+	generate([]string{}, codes)
 	return result
 }
