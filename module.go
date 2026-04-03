@@ -1,5 +1,14 @@
-// Package voidbus provides module abstraction for VoidBus v2.0.
+// Package voidbus provides module abstraction for VoidBus v3.0.
 package voidbus
+
+import (
+	"time"
+
+	"github.com/Script-OS/VoidBus/channel"
+	"github.com/Script-OS/VoidBus/codec"
+	"github.com/Script-OS/VoidBus/fragment"
+	"github.com/Script-OS/VoidBus/session"
+)
 
 // Module is the base interface for all VoidBus modules.
 type Module interface {
@@ -14,12 +23,14 @@ type Module interface {
 }
 
 // CodecModule is the abstraction for codec management module.
+// Type-safe interface (v3.0 improvement).
 type CodecModule interface {
 	Module
 
 	// === Codec Registration ===
 	// AddCodec registers a codec with user-defined code.
-	AddCodec(codec interface{}, code string) error
+	// Type-safe: requires codec.Codec interface.
+	AddCodec(codec codec.Codec, code string) error
 
 	// SetMaxDepth sets maximum codec chain depth.
 	SetMaxDepth(depth int) error
@@ -29,10 +40,12 @@ type CodecModule interface {
 
 	// === Codec Selection ===
 	// RandomSelect randomly selects codec chain.
-	RandomSelect() (codes []string, chain interface{}, err error)
+	// Type-safe: returns codec.CodecChain interface.
+	RandomSelect() (codes []string, chain codec.CodecChain, err error)
 
 	// MatchByHash matches codec chain by hash.
-	MatchByHash(hash [32]byte) (codes []string, chain interface{}, err error)
+	// Type-safe: returns codec.CodecChain interface.
+	MatchByHash(hash [32]byte) (codes []string, chain codec.CodecChain, err error)
 
 	// ComputeHash computes hash for codec codes.
 	ComputeHash(codes []string) [32]byte
@@ -52,12 +65,14 @@ type CodecModule interface {
 }
 
 // ChannelModule is the abstraction for channel management module.
+// Type-safe interface (v3.0 improvement).
 type ChannelModule interface {
 	Module
 
 	// === Channel Registration ===
 	// AddChannel adds a channel to the pool.
-	AddChannel(channel interface{}, id string) error
+	// Type-safe: requires channel.Channel interface.
+	AddChannel(channel channel.Channel, id string) error
 
 	// RemoveChannel removes a channel from the pool.
 	RemoveChannel(id string) error
@@ -70,20 +85,24 @@ type ChannelModule interface {
 
 	// === Channel Selection ===
 	// RandomSelect randomly selects a channel.
-	RandomSelect() (interface{}, error)
+	// Type-safe: returns channel.Channel interface.
+	RandomSelect() (channel.Channel, error)
 
 	// SelectHealthy selects the healthiest channel.
-	SelectHealthy() (interface{}, error)
+	// Type-safe: returns channel.Channel interface.
+	SelectHealthy() (channel.Channel, error)
 
 	// SelectForMTU selects channel suitable for given data size.
-	SelectForMTU(dataSize int) (interface{}, error)
+	// Type-safe: returns channel.Channel interface.
+	SelectForMTU(dataSize int) (channel.Channel, error)
 
 	// GetAdaptiveMTU returns adaptive MTU based on all channels.
 	GetAdaptiveMTU() int
 
 	// === Health Tracking ===
 	// RecordSend records successful send operation.
-	RecordSend(id string, latency interface{})
+	// Type-safe: latency parameter uses time.Duration.
+	RecordSend(id string, latency time.Duration)
 
 	// RecordError records send error.
 	RecordError(id string)
@@ -103,25 +122,30 @@ type ChannelModule interface {
 }
 
 // FragmentModule is the abstraction for fragment management module.
+// Type-safe interface (v3.0 improvement).
 type FragmentModule interface {
 	Module
 
 	// === Send Buffer ===
 	// CreateSendBuffer creates send buffer for a session.
-	CreateSendBuffer(sessionID string, data []byte) interface{}
+	// Type-safe: returns fragment.SendBuffer pointer.
+	CreateSendBuffer(sessionID string, data []byte) *fragment.SendBuffer
 
 	// GetSendBuffer retrieves send buffer.
-	GetSendBuffer(sessionID string) (interface{}, error)
+	// Type-safe: returns fragment.SendBuffer pointer.
+	GetSendBuffer(sessionID string) (*fragment.SendBuffer, error)
 
 	// RemoveSendBuffer removes send buffer.
 	RemoveSendBuffer(sessionID string) error
 
 	// === Receive Buffer ===
 	// CreateRecvBuffer creates receive buffer for a session.
-	CreateRecvBuffer(sessionID string, total uint16, codecDepth uint8, codecHash [32]byte, dataHash [32]byte) interface{}
+	// Type-safe: returns fragment.RecvBuffer pointer.
+	CreateRecvBuffer(sessionID string, total uint16, codecDepth uint8, codecHash [32]byte, dataHash [32]byte) *fragment.RecvBuffer
 
 	// GetRecvBuffer retrieves receive buffer.
-	GetRecvBuffer(sessionID string) (interface{}, error)
+	// Type-safe: returns fragment.RecvBuffer pointer.
+	GetRecvBuffer(sessionID string) (*fragment.RecvBuffer, error)
 
 	// RemoveRecvBuffer removes receive buffer.
 	RemoveRecvBuffer(sessionID string) error
@@ -146,15 +170,18 @@ type FragmentModule interface {
 }
 
 // SessionModule is the abstraction for session management module.
+// Type-safe interface (v3.0 improvement).
 type SessionModule interface {
 	Module
 
 	// === Send Session ===
 	// CreateSendSession creates send session.
-	CreateSendSession(codecCodes []string, codecHash [32]byte, codecDepth int, dataHash [32]byte) interface{}
+	// Type-safe: returns session.Session pointer.
+	CreateSendSession(codecCodes []string, codecHash [32]byte, codecDepth int, dataHash [32]byte) *session.Session
 
 	// GetSendSession retrieves send session.
-	GetSendSession(sessionID string) (interface{}, error)
+	// Type-safe: returns session.Session pointer.
+	GetSendSession(sessionID string) (*session.Session, error)
 
 	// CompleteSendSession marks send session as completed.
 	CompleteSendSession(sessionID string) error
@@ -164,10 +191,12 @@ type SessionModule interface {
 
 	// === Receive Session ===
 	// CreateRecvSession creates receive session.
-	CreateRecvSession(sessionID string, codecCodes []string, codecHash [32]byte, codecDepth int, dataHash [32]byte) interface{}
+	// Type-safe: returns session.Session pointer.
+	CreateRecvSession(sessionID string, codecCodes []string, codecHash [32]byte, codecDepth int, dataHash [32]byte) *session.Session
 
 	// GetRecvSession retrieves receive session.
-	GetRecvSession(sessionID string) (interface{}, error)
+	// Type-safe: returns session.Session pointer.
+	GetRecvSession(sessionID string) (*session.Session, error)
 
 	// CompleteRecvSession marks receive session as completed.
 	CompleteRecvSession(sessionID string) error
