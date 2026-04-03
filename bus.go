@@ -190,14 +190,14 @@ func (b *Bus) DialChannel(ch channel.Channel) (net.Conn, error) {
 // dialWithChannel is the internal implementation.
 // If ch is nil, uses the first registered channel.
 func (b *Bus) dialWithChannel(ch channel.Channel) (net.Conn, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	// State transition: StateIdle -> StateConnected
-	// Note: setState() holds b.mu internally, so we call it without holding the lock
+	// Note: setState() requires external lock (updated in v3.0)
 	if err := b.setState(StateConnected); err != nil {
 		return nil, err
 	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
 
 	// Get all channel IDs
 	channelIDs := b.channelPool.GetChannelIDs()
@@ -423,14 +423,14 @@ func (b *Bus) negotiateChannelAndStartReceive(channelID string, ch channel.Chann
 // Listen aggregates all registered ServerChannels and waits for multi-channel sessions.
 // Each Accept returns a net.Conn when all negotiated channels are connected.
 func (b *Bus) Listen() (net.Listener, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	// State transition: StateIdle -> StateRunning
-	// Note: setState() holds b.mu internally
+	// Note: setState() requires external lock (updated in v3.0)
 	if err := b.setState(StateRunning); err != nil {
 		return nil, err
 	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
 
 	// Check if any server channels are registered
 	if len(b.serverChannels) == 0 {
@@ -896,8 +896,11 @@ func (b *Bus) sendEND_ACK(sessionID string) error {
 // It closes all channels first to unblock any goroutines waiting on Receive(),
 // then waits for all goroutines to exit cleanly.
 func (b *Bus) Stop() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	// State transition: StateRunning -> StateClosed
-	// Note: setState() holds b.mu internally
+	// Note: setState() requires external lock (updated in v3.0)
 	if err := b.setState(StateClosed); err != nil {
 		// If already closed or in wrong state, still try to clean up
 		if err != ErrBusClosed {
@@ -906,9 +909,6 @@ func (b *Bus) Stop() error {
 		// Already closed, return success
 		return nil
 	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
 
 	close(b.stopChan)
 

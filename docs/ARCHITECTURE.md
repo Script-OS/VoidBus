@@ -874,7 +874,9 @@ StateIdle → StateRunning → (Accept 创建 clientBus in StateConnected)
 | StateRunning | StateClosed | 所有其他状态 |
 | StateClosed | 无（禁止转换） | 所有状态 |
 
-### 14.3 状态管理实现
+### 14.3 状态管理实现（v3.0 更新）
+
+**重要变更（2026-04-03）**: 为避免双重加锁死锁，setState() 方法已改为**要求外部持锁**。
 
 ```go
 // Bus 结构体改进
@@ -888,9 +890,11 @@ type Bus struct {
 }
 
 // 状态转换方法（明确、原子性、带验证）
+// 重要：此方法要求外部已持有 b.mu 锁，内部不加锁
+// 变更原因：避免 dialWithChannel、Listen、Stop 等方法双重加锁死锁
 func (b *Bus) setState(newState BusState) error {
-    b.mu.Lock()
-    defer b.mu.Unlock()
+    // NOTE: 不再加锁 - 外部必须持锁
+    // 这避免了从已持锁方法调用时的双重加锁死锁
     
     currentState := BusState(b.state.Load())
     
@@ -937,6 +941,20 @@ func (b *Bus) isClosed() bool {
     return b.getState() == StateClosed
 }
 ```
+
+**锁使用原则（已更新）**:
+
+| 方法 | 锁要求 | 说明 |
+|------|--------|------|
+| setState() | **外部必须持锁** | 内部不加锁，避免双重加锁死锁 |
+| getState() | 无锁 | 使用 atomic.Load() |
+| isRunning(), isNegotiated(), isClosed() | 无锁 | 使用 atomic.Load() |
+
+**已修复的方法（持锁调用 setState）**:
+- dialWithChannel: 开始时持锁，所有 setState 调用在持锁状态下进行
+- Listen: 开始时持锁，所有 setState 调用在持锁状态下进行
+- Stop: 开始时持锁，setState 调用在持锁状态下进行
+- startClientBusAndReturnConn: 持锁调用 setState，完成后释放锁
 
 ### 14.4 状态转换在流程中的应用
 
@@ -1078,4 +1096,4 @@ type ChannelModule interface {
 
 ---
 
-*最后更新：2026-04-03*
+*最后更新：2026-04-03 (setState 锁使用原则更新)*

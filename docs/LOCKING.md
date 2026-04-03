@@ -233,17 +233,18 @@ const (
 )
 ```
 
-### 5.2 状态转换锁原则
+### 5.2 状态转换锁原则（v3.0 更新）
 
-**原则**: 状态转换方法 `setState()` 已持有 `b.mu` 锁，避免双重加锁。
+**重要变更（2026-04-03）**: 为避免双重加锁死锁，setState() 方法已改为**要求外部持锁**。
+
+**原则**: 状态转换方法 `setState()` **要求外部已持有 `b.mu` 锁**，内部不再加锁。
 
 **正确示例**:
 ```go
-// 状态转换方法（已持锁）
+// 状态转换方法（要求外部持锁）
 func (b *Bus) setState(newState BusState) error {
-    b.mu.Lock()
-    defer b.mu.Unlock()
-    
+    // 不再加锁：b.mu.Lock()
+    // 直接读取和验证状态（假设外部已持锁）
     currentState := BusState(b.state.Load())
     
     // 状态转换验证
@@ -259,33 +260,44 @@ func (b *Bus) setState(newState BusState) error {
     return nil
 }
 
-// 外部调用（不持锁）
+// 外部调用（必须持锁）
 func (b *Bus) Dial(ch Channel) (net.Conn, error) {
-    // 先进行其他操作（不持锁）
-    ...
+    b.mu.Lock()
+    defer b.mu.Unlock()  // 外部持锁
     
-    // 状态转换时才持锁（setState 内部持锁）
+    // 状态转换（setState 内部不加锁）
     if err := b.setState(StateConnected); err != nil {
         return nil, err
     }
     
-    ...
+    // 继续其他操作...
 }
 ```
 
 **错误示例**:
 ```go
-// 错误：双重加锁
+// 错误：未持锁调用 setState
 func (b *Bus) Dial(ch Channel) (net.Conn, error) {
-    b.mu.Lock()
-    defer b.mu.Unlock()  // 外部已持锁
-    
-    // setState 内部又会持锁 → 死锁！
+    // 未持锁直接调用 → 可能导致并发问题！
     if err := b.setState(StateConnected); err != nil {
         return nil, err
     }
+    
+    b.mu.Lock()
+    defer b.mu.Unlock()
+    ...
 }
 ```
+
+**变更原因**:
+- dialWithChannel、Listen、Stop 等方法需要持锁进行多项操作
+- 这些方法在持锁期间多次调用 setState() 
+- 如果 setState 内部也加锁 → 双重加锁死锁
+- 因此改为：setState 要求外部持锁，内部不加锁
+
+**影响范围**:
+- 所有 setState() 调用必须在持锁状态下进行
+- 已修复的方法：dialWithChannel, Listen, Stop, startClientBusAndReturnConn
 
 ### 5.3 状态查询的锁原则
 
@@ -335,4 +347,4 @@ func (b *Bus) Send(data []byte) error {
 ---
 
 *文档维护：每次锁相关修复后更新此文档*
-*最后更新：2026-04-03*
+*最后更新：2026-04-03 (setState 锁使用原则更新)*

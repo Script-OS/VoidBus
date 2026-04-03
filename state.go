@@ -33,11 +33,22 @@ var (
 )
 
 // setState sets the new state with validation.
-// This method holds b.mu internally, external callers should NOT hold the lock.
-// See docs/LOCKING.md §5.2 for locking principles.
+//
+// IMPORTANT: This method requires the caller to hold b.mu lock externally.
+// The method does NOT acquire the lock internally to avoid deadlock when
+// called from methods that already hold the lock.
+//
+// Locking principle (updated in v3.0):
+//   - External caller MUST hold b.mu before calling this method
+//   - This method does NOT acquire/release the lock
+//   - This design prevents deadlock when setState is called from methods
+//     that already hold b.mu (e.g., dialWithChannel, Listen)
+//
+// See docs/LOCKING.md §5.2 for updated locking principles.
+// See docs/ARCHITECTURE.md §14.3 for state management design.
 func (b *Bus) setState(newState BusState) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	// NOTE: No lock acquisition here - caller must hold b.mu externally
+	// This prevents deadlock when called from methods that already hold the lock
 
 	currentState := BusState(b.state.Load())
 
