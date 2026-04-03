@@ -37,7 +37,7 @@ const (
 	udpPort = 19002
 )
 
-const key = "voidbus-file-transfer-test-key-32!"
+const key = "voidbus-file-transfer-test-key!!"
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
