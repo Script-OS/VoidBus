@@ -241,7 +241,7 @@ const (
     TypeUDP  ChannelType = "udp"
     TypeICMP ChannelType = "icmp"
     TypeWS   ChannelType = "ws"
-    // TypeQUIC removed in v3.0 - simplification
+    // TypeQUIC removed in v1.0 - simplification
 )
 
 // Channel 信道核心接口
@@ -643,7 +643,7 @@ type FragmentManager interface {
 
 ### 6.1 核心 API（net.Conn/net.Listener 风格）
 
-VoidBus v3.0 采用 Go 标准库风格的消息式通信接口。
+VoidBus v1.0 采用 Go 标准库风格的消息式通信接口。
 
 ```go
 package voidbus
@@ -892,7 +892,7 @@ package negotiate
 type NegotiateRequest struct {
     // ChannelBitmap 信道类型位图
     // Bit 0=WS, 1=TCP, 2=UDP, 3=ICMP, 4=DNS, 5=HTTP, 6=Reserved, 7=Reserved
-    // (QUIC removed in v3.0 - compact mapping)
+    // (QUIC removed in v1.0 - compact mapping)
     ChannelBitmap []byte
     
     // CodecBitmap Codec类型位图
@@ -1571,9 +1571,9 @@ func (c *DefaultChain) SecurityLevel() SecurityLevel {
 
 ---
 
-## 15. Module 接口类型安全约束（v3.0）
+## 15. Module 接口类型安全约束（v1.0）
 
-VoidBus v3.0 优化 Module 接口定义，确保类型安全。
+VoidBus v1.0 优化 Module 接口定义，确保类型安全。
 
 ### 15.1 类型安全原则
 

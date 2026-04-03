@@ -1,7 +1,7 @@
-# VoidBus v3.0 架构改进实施报告
+# VoidBus v1.0 架构改进实施报告
 
 **日期**: 2026-04-03  
-**版本**: v3.0  
+**版本**: v1.0  
 **状态**: ✅ 已完成
 
 ---
@@ -165,7 +165,7 @@ StateClosed     → 禁止转换
 ## 提交记录
 
 ```
-e19112b docs: update architecture docs for v3.0 improvements
+e19112b docs: update architecture docs for v1.0 improvements
 fd7901b docs: add architecture improvement analysis document
 eec2ef6 refactor(bus): use single state enum instead of three atomic.Bool flags
 b3fa8ba refactor(module): replace interface{} with concrete types for type safety
@@ -194,8 +194,8 @@ b3fa8ba refactor(module): replace interface{} with concrete types for type safet
 1. **性能测试**: 运行完整性能测试套件验证改进效果
 2. **集成测试**: 在生产环境验证状态转换逻辑
 3. **P1 改进评估**: 收集 goroutine 数量和性能数据
-4. **版本发布**: 准备 v3.0 发布说明
+4. **版本发布**: 准备 v1.0 发布说明
 
 ---
 
-**结论**: VoidBus v3.0 架构改进已成功实施，显著提升了类型安全性和状态管理清晰度。所有改进均符合架构约束，编译测试通过，代码质量良好。
+**结论**: VoidBus v1.0 架构改进已成功实施，显著提升了类型安全性和状态管理清晰度。所有改进均符合架构约束，编译测试通过，代码质量良好。

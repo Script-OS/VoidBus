@@ -454,7 +454,7 @@ type NegotiationResponse struct {
 
 ### 8.1 核心 API（net.Conn/net.Listener 风格）
 
-VoidBus v3.0 采用 Go 标准库的 `net.Conn` 和 `net.Listener` 风格 API，提供消息式的通信接口。
+VoidBus v1.0 采用 Go 标准库的 `net.Conn` 和 `net.Listener` 风格 API，提供消息式的通信接口。
 
 ```go
 // === Client 模式 ===
@@ -833,9 +833,9 @@ func IsHighSeverity(err error) bool
 
 ---
 
-## 14. 状态管理设计（v3.0改进）
+## 14. 状态管理设计（v1.0改进）
 
-VoidBus v3.0 采用单一状态枚举代替多个布尔标志，简化状态管理并确保状态转换清晰。
+VoidBus v1.0 采用单一状态枚举代替多个布尔标志，简化状态管理并确保状态转换清晰。
 
 ### 14.1 状态枚举定义
 
@@ -874,7 +874,7 @@ StateIdle → StateRunning → (Accept 创建 clientBus in StateConnected)
 | StateRunning | StateClosed | 所有其他状态 |
 | StateClosed | 无（禁止转换） | 所有状态 |
 
-### 14.3 状态管理实现（v3.0 更新）
+### 14.3 状态管理实现（v1.0 更新）
 
 **重要变更（2026-04-03）**: 为避免双重加锁死锁，setState() 方法已改为**要求外部持锁**。
 
@@ -993,9 +993,9 @@ listener.Accept()
 
 ---
 
-## 15. Module 接口类型安全（v3.0改进）
+## 15. Module 接口类型安全（v1.0改进）
 
-VoidBus v3.0 优化 Module 接口定义，将 `interface{}` 参数替换为明确的具体类型，确保编译时类型检查。
+VoidBus v1.0 优化 Module 接口定义，将 `interface{}` 参数替换为明确的具体类型，确保编译时类型检查。
 
 ### 15.1 改进原则
 
