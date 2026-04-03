@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,6 +30,9 @@ func main() {
 		panic(err)
 	}
 	bus.SetKey(key)
+
+	// Enable debug mode to track channel/codec usage
+	bus.SetDebugMode(true)
 
 	// Register multiple codecs - Bus randomly selects codec chains per message
 	bus.RegisterCodec(base64.New())
@@ -67,7 +71,9 @@ func main() {
 	if err != nil {
 		panic(fmt.Sprintf("dial failed: %v", err))
 	}
+
 	fmt.Println("Connected! Messages will be distributed across TCP/WS/UDP channels.")
+	fmt.Println("Codec chains: base64 | xor | aes | chacha20 (random selection)")
 	fmt.Println("Type messages to send (Ctrl+C to exit):")
 
 	// Graceful shutdown
@@ -85,11 +91,11 @@ func main() {
 				fmt.Printf("\nConnection closed: %v\n", err)
 				return
 			}
-			fmt.Printf("\n[server] %s\nclient> ", string(buf[:n]))
+			fmt.Printf("\n[server] %s\n", string(buf[:n]))
 		}
 	}()
 
-	// Send loop
+	// Send loop with channel/codec display
 	scanner := bufio.NewScanner(os.Stdin)
 	done := make(chan struct{})
 	go func() {
@@ -103,9 +109,43 @@ func main() {
 			if msg == "" {
 				continue
 			}
+
+			// Send message
 			if _, err := conn.Write([]byte(msg)); err != nil {
 				fmt.Printf("Send error: %v\n", err)
 				return
+			}
+
+			// Display channel/codec info (type assertion to access debug methods)
+			// Note: GetLastSendInfo only returns data in debug mode
+			if vconn, ok := conn.(interface{ GetLastSendInfo() *voidbus.SendInfo }); ok {
+				info := vconn.GetLastSendInfo()
+				if info != nil {
+					// Format channel distribution
+					channelCounts := make(map[string]int)
+					for _, chID := range info.Channels {
+						// Extract channel type from ID (e.g., "tcp-abc123" -> "TCP")
+						chType := strings.Split(chID, "-")[0]
+						channelCounts[strings.ToUpper(chType)]++
+					}
+
+					chSummary := ""
+					for chType, count := range channelCounts {
+						if chSummary != "" {
+							chSummary += ", "
+						}
+						chSummary += fmt.Sprintf("%s:%d", chType, count)
+					}
+
+					// Format codec chain
+					codecChain := strings.Join(info.CodecChain, "->")
+					if codecChain == "" {
+						codecChain = "(unknown)"
+					}
+
+					fmt.Printf("  Sent via [%s] with codec [%s] (%d fragments, %d bytes)\n",
+						chSummary, codecChain, info.FragmentCnt, info.DataSize)
+				}
 			}
 		}
 	}()

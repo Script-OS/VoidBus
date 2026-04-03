@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -39,6 +40,9 @@ func main() {
 		panic(err)
 	}
 	bus.SetKey(key)
+
+	// Enable debug mode to track channel/codec usage
+	bus.SetDebugMode(true)
 
 	// Register multiple codecs - Bus randomly selects codec chains per message
 	bus.RegisterCodec(base64.New())
@@ -164,8 +168,30 @@ func handleClient(conn net.Conn) {
 		msg := string(buf[:n])
 		fmt.Printf("[%s] %s\n", conn.RemoteAddr(), msg)
 
-		// Echo back
-		conn.Write([]byte(fmt.Sprintf("s2c:%s", msg)))
+		// Echo back with channel/codec info display
+		reply := fmt.Sprintf("ACK: %s", msg)
+		conn.Write([]byte(reply))
+
+		// Display channel/codec info for the reply (type assertion to access debug methods)
+		if vconn, ok := conn.(interface{ GetLastSendInfo() *voidbus.SendInfo }); ok {
+			info := vconn.GetLastSendInfo()
+			if info != nil {
+				channelCounts := make(map[string]int)
+				for _, chID := range info.Channels {
+					chType := strings.Split(chID, "-")[0]
+					channelCounts[strings.ToUpper(chType)]++
+				}
+				chSummary := ""
+				for chType, count := range channelCounts {
+					if chSummary != "" {
+						chSummary += ", "
+					}
+					chSummary += fmt.Sprintf("%s:%d", chType, count)
+				}
+				codecChain := strings.Join(info.CodecChain, "->")
+				fmt.Printf("  Reply via [%s] with codec [%s]\n", chSummary, codecChain)
+			}
+		}
 	}
 }
 
@@ -201,6 +227,27 @@ func broadcast(msg string) {
 		go func(c net.Conn) {
 			if _, err := c.Write([]byte(msg)); err != nil {
 				fmt.Printf("Failed to send to %s: %v\n", c.RemoteAddr(), err)
+			}
+			// Display channel/codec info for broadcast (type assertion)
+			if vconn, ok := c.(interface{ GetLastSendInfo() *voidbus.SendInfo }); ok {
+				info := vconn.GetLastSendInfo()
+				if info != nil {
+					channelCounts := make(map[string]int)
+					for _, chID := range info.Channels {
+						chType := strings.Split(chID, "-")[0]
+						channelCounts[strings.ToUpper(chType)]++
+					}
+					chSummary := ""
+					for chType, count := range channelCounts {
+						if chSummary != "" {
+							chSummary += ", "
+						}
+						chSummary += fmt.Sprintf("%s:%d", chType, count)
+					}
+					codecChain := strings.Join(info.CodecChain, "->")
+					fmt.Printf("  Broadcast to %s via [%s] with codec [%s]\n",
+						c.RemoteAddr(), chSummary, codecChain)
+				}
 			}
 		}(conn)
 	}

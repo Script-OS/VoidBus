@@ -444,12 +444,20 @@ func (b *Bus) Listen() (net.Listener, error) {
 // === Internal Methods ===
 
 // sendInternal sends data through the bus (used by VoidBusConn.Write).
+// Deprecated: Use sendInternalWithInfo for detailed send information.
 func (b *Bus) sendInternal(ctx context.Context, data []byte) error {
+	_, err := b.sendInternalWithInfo(ctx, data)
+	return err
+}
+
+// sendInternalWithInfo sends data and returns detailed send information.
+// Returns SendInfo with channels used, codec chain, fragment count, and data size.
+func (b *Bus) sendInternalWithInfo(ctx context.Context, data []byte) (*SendInfo, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	if !b.connected.Load() || !b.negotiated.Load() {
-		return ErrChannelNotReady
+		return nil, ErrChannelNotReady
 	}
 
 	if b.config.DebugMode {
@@ -461,19 +469,22 @@ func (b *Bus) sendInternal(ctx context.Context, data []byte) error {
 	case b.sendSemaphore <- struct{}{}:
 		defer func() { <-b.sendSemaphore }()
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	case <-b.stopChan:
-		return ErrBusNotRunning
+		return nil, ErrBusNotRunning
 	}
 
 	// Select codec chain
 	chain, codecHash, err := b.codecManager.SelectChain()
 	if err != nil {
-		return WrapModuleError("SelectChain", "codec", err)
+		return nil, WrapModuleError("SelectChain", "codec", err)
 	}
 
+	// Get codec chain codes for SendInfo
+	codecCodes := b.codecManager.GetChainCodes(codecHash)
+
 	if b.config.DebugMode {
-		fmt.Printf("[DEBUG] sendInternal: selected codec chain, hash: %x, depth: %d\n", codecHash[:4], chain.Length())
+		fmt.Printf("[DEBUG] sendInternal: selected codec chain, hash: %x, depth: %d, codes: %v\n", codecHash[:4], chain.Length(), codecCodes)
 	}
 
 	// Compute data hash
@@ -492,7 +503,7 @@ func (b *Bus) sendInternal(ctx context.Context, data []byte) error {
 	encodedData, err := chain.Encode(data)
 	if err != nil {
 		b.sessionMgr.RemoveSendSession(sess.ID)
-		return WrapModuleError("Encode", "codec", err)
+		return nil, WrapModuleError("Encode", "codec", err)
 	}
 
 	if b.config.DebugMode {
@@ -509,7 +520,7 @@ func (b *Bus) sendInternal(ctx context.Context, data []byte) error {
 	fragments, checksums, err := b.fragmentMgr.AdaptiveSplit(encodedData, mtu)
 	if err != nil {
 		b.sessionMgr.RemoveSendSession(sess.ID)
-		return WrapModuleError("AdaptiveSplit", "fragment", err)
+		return nil, WrapModuleError("AdaptiveSplit", "fragment", err)
 	}
 
 	if b.config.DebugMode {
@@ -581,13 +592,28 @@ func (b *Bus) sendInternal(ctx context.Context, data []byte) error {
 	select {
 	case err := <-errChan:
 		b.sessionMgr.RemoveSendSession(sess.ID)
-		return WrapModuleError("SendFragments", "channel", err)
+		return nil, WrapModuleError("SendFragments", "channel", err)
 	default:
 		// All fragments sent successfully
 	}
 
 	b.adaptiveTimer.AddMeasurement(time.Since(sess.CreatedAt))
-	return nil
+
+	// Only return SendInfo in debug mode (reduces overhead in production)
+	if b.config.DebugMode {
+		// Collect channel IDs used for sending
+		channelIDs := sendBuf.GetFragmentChannelIDs()
+
+		return &SendInfo{
+			Channels:    channelIDs,
+			CodecChain:  codecCodes,
+			CodecHash:   codecHash,
+			FragmentCnt: len(fragments),
+			DataSize:    len(data),
+		}, nil
+	}
+
+	return nil, nil
 }
 
 // bridgeReceiveToChan bridges bus receive queue to conn recvChan.

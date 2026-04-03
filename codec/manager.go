@@ -402,6 +402,22 @@ func (m *CodecManager) GetCodec(code string) (Codec, error) {
 	return codec, nil
 }
 
+// GetChainCodes returns codec chain codes by hash.
+// Useful for displaying which codecs were used for a message.
+func (m *CodecManager) GetChainCodes(hash [32]byte) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	hashKey := hashToUint32(hash)
+	if codes, exists := m.hashCache[hashKey]; exists {
+		result := make([]string, len(codes))
+		copy(result, codes)
+		return result
+	}
+
+	return nil
+}
+
 // CodecCount returns registered codec count.
 func (m *CodecManager) CodecCount() int {
 	m.mu.RLock()

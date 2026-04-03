@@ -9,6 +9,7 @@
 - **Session-based 关联**：Client 通过 SessionID 将所有 channel 关联到同一连接
 - **健康权重选择**：ChannelPool 根据健康度加权随机选择 channel
 - **优雅退出**：Ctrl+C 后正确清理所有 goroutine 和资源
+- **Debug 模式**：显示消息实际使用的 channel 和 codec 链
 
 ## 运行方式
 

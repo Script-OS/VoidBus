@@ -27,6 +27,15 @@ import (
 // n returned by Read indicates the required buffer size.
 var ErrBufferTooSmall = errors.New("voidbus: buffer too small for complete message")
 
+// SendInfo holds information about the last sent message.
+type SendInfo struct {
+	Channels    []string // Channel IDs used for sending fragments
+	CodecChain  []string // Codec codes used for encoding
+	CodecHash   [32]byte // Codec chain hash
+	FragmentCnt int      // Number of fragments
+	DataSize    int      // Original data size
+}
+
 // voidBusConn implements net.Conn for VoidBus connections.
 // Message-oriented semantics: each Read/Write operates on a complete message.
 type voidBusConn struct {
@@ -49,6 +58,10 @@ type voidBusConn struct {
 	// State
 	closed  bool
 	closeMu sync.Mutex
+
+	// Last send info (for channel/codec chain display)
+	lastSendMu sync.Mutex
+	lastSend   *SendInfo
 }
 
 // Read reads ONE complete message from the connection.
@@ -141,6 +154,19 @@ func (c *voidBusConn) Write(b []byte) (n int, err error) {
 		defer cancel()
 	}
 
+	// In debug mode, use sendInternalWithInfo to get detailed send information
+	if c.bus.config.DebugMode {
+		info, err := c.bus.sendInternalWithInfo(ctx, b)
+		if err != nil {
+			return 0, err
+		}
+		if info != nil {
+			c.setLastSendInfo(info)
+		}
+		return len(b), nil
+	}
+
+	// Normal mode: use sendInternal (no overhead for tracking)
 	if err := c.bus.sendInternal(ctx, b); err != nil {
 		return 0, err
 	}
@@ -203,6 +229,22 @@ func (c *voidBusConn) SetWriteDeadline(t time.Time) error {
 // ChannelID returns the channel ID used for this connection.
 func (c *voidBusConn) ChannelID() string {
 	return c.channelID
+}
+
+// GetLastSendInfo returns information about the last sent message.
+// Returns nil if no message has been sent yet.
+// Contains: Channels (IDs used), CodecChain (codes), FragmentCnt, DataSize.
+func (c *voidBusConn) GetLastSendInfo() *SendInfo {
+	c.lastSendMu.Lock()
+	defer c.lastSendMu.Unlock()
+	return c.lastSend
+}
+
+// setLastSendInfo updates the last send info (internal method).
+func (c *voidBusConn) setLastSendInfo(info *SendInfo) {
+	c.lastSendMu.Lock()
+	c.lastSend = info
+	c.lastSendMu.Unlock()
 }
 
 // newVoidBusConn creates a new VoidBus connection.

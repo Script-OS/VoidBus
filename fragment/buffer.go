@@ -182,6 +182,19 @@ func (b *SendBuffer) GetFragmentCount() int {
 	return len(b.Fragments)
 }
 
+// GetFragmentChannelIDs returns channel IDs used for sending fragments.
+// Only available in debug mode for display purposes.
+func (b *SendBuffer) GetFragmentChannelIDs() []string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	ids := make([]string, len(b.Fragments))
+	for i, f := range b.Fragments {
+		ids[i] = f.ChannelID
+	}
+	return ids
+}
+
 // NewRecvBuffer creates a new RecvBuffer.
 func NewRecvBuffer(sessionID string, total uint16, codecDepth uint8, codecHash [32]byte, dataHash [32]byte) *RecvBuffer {
 	missing := make([]uint16, total)
