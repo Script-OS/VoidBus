@@ -1,19 +1,9 @@
 // Package main provides a non-interactive VoidBus server for file transfer testing.
-//
-// Usage:
-//
-//	go run server.go
-//
-// The server will:
-// 1. Listen on TCP:19000, WS:19001, UDP:19002
-// 2. Accept one client connection
-// 3. Receive a file (saved as received_file.bin)
-// 4. Send a file back (test_file.bin from current directory)
-// 5. Display detailed logs with channel/codec information
-// 6. Exit after transfer completes
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -45,36 +35,30 @@ func main() {
 	log.Println("=== VoidBus Non-Interactive Server ===")
 	log.Println("Starting server...")
 
-	// Create bus
 	bus, err := voidbus.New(nil)
 	if err != nil {
 		log.Fatalf("Failed to create bus: %v", err)
 	}
 
-	// Set key (must match client)
 	if err := bus.SetKey([]byte(key)); err != nil {
 		log.Fatalf("Failed to set key: %v", err)
 	}
 	log.Printf("Encryption key set: %d bytes", len(key))
 
-	// Limit codec depth to 3
 	if err := bus.SetMaxCodecDepth(3); err != nil {
 		log.Fatalf("Failed to set max codec depth: %v", err)
 	}
 	log.Println("Max codec depth: 3")
 
-	// Enable debug mode for detailed logs
 	bus.SetDebugMode(true)
 	log.Println("Debug mode: enabled")
 
-	// Register codecs
 	bus.RegisterCodec(base64.New())
 	bus.RegisterCodec(xor.New())
 	bus.RegisterCodec(aes.NewAES256Codec())
 	bus.RegisterCodec(chacha20.New())
 	log.Println("Registered codecs: base64, xor, aes, chacha20")
 
-	// Add server channels
 	tcpServer := mustChannel(tcp.NewServerChannel(channel.ChannelConfig{Address: fmt.Sprintf(":%d", tcpPort)}))
 	wsServer := mustChannel(ws.NewServerChannel(channel.ChannelConfig{Address: fmt.Sprintf(":%d", wsPort)}))
 	udpServer := mustChannel(udp.NewServerChannel(channel.ChannelConfig{Address: fmt.Sprintf(":%d", udpPort)}))
@@ -85,7 +69,6 @@ func main() {
 
 	log.Printf("Server channels: TCP:%d, WS:%d, UDP:%d", tcpPort, wsPort, udpPort)
 
-	// Start listening
 	listener, err := bus.Listen()
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
@@ -94,7 +77,6 @@ func main() {
 
 	log.Println("Waiting for client connection...")
 
-	// Accept one connection
 	conn, err := listener.Accept()
 	if err != nil {
 		log.Fatalf("Failed to accept: %v", err)
@@ -107,7 +89,6 @@ func main() {
 	// === Phase 1: Receive file from client ===
 	log.Println("=== Phase 1: Receiving file from client ===")
 
-	// First, receive file size (8 bytes)
 	sizeBuf := make([]byte, 8)
 	_, err = io.ReadFull(conn, sizeBuf)
 	if err != nil {
@@ -117,24 +98,29 @@ func main() {
 		int64(sizeBuf[4])<<24 | int64(sizeBuf[5])<<16 | int64(sizeBuf[6])<<8 | int64(sizeBuf[7])
 	log.Printf("Incoming file size: %d bytes (%.2f MB)", fileSize, float64(fileSize)/1024/1024)
 
-	// Receive file data
+	// Receive file data with hash calculation
 	receivedFile, err := os.Create("received_file.bin")
 	if err != nil {
 		log.Fatalf("Failed to create output file: %v", err)
 	}
 	defer receivedFile.Close()
 
+	hasher := sha256.New()
+	multiWriter := io.MultiWriter(receivedFile, hasher)
+
 	startTime := time.Now()
-	received, err := io.CopyN(receivedFile, conn, fileSize)
+	received, err := io.CopyN(multiWriter, conn, fileSize)
 	if err != nil {
 		log.Fatalf("Failed to receive file: %v", err)
 	}
 	recvDuration := time.Since(startTime)
 
+	receivedHash := hex.EncodeToString(hasher.Sum(nil))
+
 	log.Printf("File received: %d bytes in %v", received, recvDuration)
 	log.Printf("Receive rate: %.2f MB/s", float64(received)/1024/1024/recvDuration.Seconds())
+	log.Printf("File SHA256: %s", receivedHash)
 
-	// Get send info from client (via debug mode)
 	if vconn, ok := conn.(interface{ GetLastSendInfo() *voidbus.SendInfo }); ok {
 		info := vconn.GetLastSendInfo()
 		if info != nil {
@@ -149,16 +135,14 @@ func main() {
 	// === Phase 2: Send file to client ===
 	log.Println("=== Phase 2: Sending file to client ===")
 
-	// Check if test file exists
 	testFile := "test_file.bin"
 	fileInfo, err := os.Stat(testFile)
 	if err != nil {
-		log.Printf("Warning: %s not found, creating a 10MB test file...", testFile)
+		log.Printf("%s not found, creating a 10MB test file...", testFile)
 		createTestFile(testFile, 10*1024*1024)
 		fileInfo, _ = os.Stat(testFile)
 	}
 
-	// Open file to send
 	sendFile, err := os.Open(testFile)
 	if err != nil {
 		log.Fatalf("Failed to open test file: %v", err)
@@ -168,7 +152,17 @@ func main() {
 	sendFileSize := fileInfo.Size()
 	log.Printf("File to send: %s (%d bytes, %.2f MB)", testFile, sendFileSize, float64(sendFileSize)/1024/1024)
 
-	// Send file size first (8 bytes, big-endian)
+	// Calculate hash before sending
+	sendHasher := sha256.New()
+	if _, err := io.Copy(sendHasher, sendFile); err != nil {
+		log.Fatalf("Failed to hash file: %v", err)
+	}
+	sendHash := hex.EncodeToString(sendHasher.Sum(nil))
+	log.Printf("File SHA256: %s", sendHash)
+
+	// Reset file position for actual sending
+	sendFile.Seek(0, 0)
+
 	sizeBuf = make([]byte, 8)
 	sizeBuf[0] = byte(sendFileSize >> 56)
 	sizeBuf[1] = byte(sendFileSize >> 48)
@@ -184,7 +178,6 @@ func main() {
 	}
 	log.Printf("Sent file size header: %d bytes", sendFileSize)
 
-	// Send file content
 	startTime = time.Now()
 	sent, err := io.CopyN(conn, sendFile, sendFileSize)
 	if err != nil {
@@ -195,7 +188,6 @@ func main() {
 	log.Printf("File sent: %d bytes in %v", sent, sendDuration)
 	log.Printf("Send rate: %.2f MB/s", float64(sent)/1024/1024/sendDuration.Seconds())
 
-	// Get our send info (server's send)
 	if vconn, ok := conn.(interface{ GetLastSendInfo() *voidbus.SendInfo }); ok {
 		info := vconn.GetLastSendInfo()
 		if info != nil {
@@ -205,8 +197,8 @@ func main() {
 
 	log.Println("")
 	log.Println("=== Transfer complete ===")
-	log.Printf("Received: received_file.bin (%d bytes)", fileSize)
-	log.Printf("Sent: test_file.bin (%d bytes)", sendFileSize)
+	log.Printf("Received: received_file.bin (%d bytes, SHA256: %s)", fileSize, receivedHash)
+	log.Printf("Sent: test_file.bin (%d bytes, SHA256: %s)", sendFileSize, sendHash)
 	log.Println("Server exiting...")
 }
 
@@ -224,7 +216,6 @@ func createTestFile(path string, size int64) {
 	}
 	defer f.Close()
 
-	// Write pattern
 	buf := make([]byte, 64*1024)
 	for i := range buf {
 		buf[i] = byte(i % 256)
@@ -244,14 +235,12 @@ func createTestFile(path string, size int64) {
 }
 
 func printSendInfo(info *voidbus.SendInfo, prefix string) {
-	// Count channel usage
 	channelCounts := make(map[string]int)
 	for _, chID := range info.Channels {
 		chType := strings.Split(chID, "-")[0]
 		channelCounts[strings.ToUpper(chType)]++
 	}
 
-	// Format channel summary
 	chSummary := ""
 	for chType, count := range channelCounts {
 		if chSummary != "" {
@@ -260,7 +249,6 @@ func printSendInfo(info *voidbus.SendInfo, prefix string) {
 		chSummary += fmt.Sprintf("%s:%d", chType, count)
 	}
 
-	// Format codec chain
 	codecChain := strings.Join(info.CodecChain, "->")
 	if codecChain == "" {
 		codecChain = "(unknown)"
