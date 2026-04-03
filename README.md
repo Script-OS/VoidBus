@@ -2,6 +2,220 @@
 
 VoidBus 是一个高度模块化、可组合的隐蔽通信总线库，实现信道与编解码的完全分离，支持任意组合和更换。
 
+## 架构图
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              用户应用层                                   │
+│                     (自行序列化/反序列化数据)                              │
+└─────────────────────────────┬───────────────────────────────────────────┘
+                              │
+                              │ 原始数据 ([]byte)
+                              │
+┌─────────────────────────────▼───────────────────────────────────────────┐
+│                              Bus (统一入口)                               │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐ │
+│  │CodecManager  │  │ ChannelPool  │  │FragmentMgr   │  │SessionMgr   │ │
+│  │ - 注册Codec  │  │ - 管理信道   │  │ - 数据分片   │  │ - 会话管理  │ │
+│  │ - 链式组合   │  │ - 健康检查   │  │ - 重组数据   │  │ - 状态跟踪  │ │
+│  │ - 哈希匹配   │  │ - 负载均衡   │  │ - ACK/NAK    │  │ - 超时清理  │ │
+│  └──────────────┘  └──────────────┘  └──────────────┘  └─────────────┘ │
+└─────────────┬───────────────────────────────────────┬───────────────────┘
+              │                                       │
+              │ Codec链式编码/解码                      │ 分片传输/重组
+              │                                       │
+┌─────────────▼───────────────────────────────────────▼───────────────────┐
+│                         Protocol (协议层)                                │
+│                    Header + 安全验证 + Bitmap协商                         │
+└─────────────┬───────────────────────────────────────┬───────────────────┘
+              │                                       │
+              │ 协商信道                               │ 数据信道
+              │ (WebSocket)                            │ (TCP/UDP/WS)
+              │                                       │
+┌─────────────▼───────────────────────────────────────▼───────────────────┐
+│                         Channel (信道层)                                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐ │
+│  │   TCP    │  │    WS    │  │   UDP    │  │   ICMP   │  │   DNS    │ │
+│  │ (可靠)   │  │ (可靠)   │  │ (不可靠) │  │ (不可靠) │  │ (不可靠) │ │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘ │
+└─────────────────────────────────────────────────────────────────────────┘
+              │
+              │ 网络传输
+              │
+┌─────────────▼───────────────────────────────────────────────────────────┐
+│                          远程对端 (Peer)                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  发送流程：原始数据 → Codec编码 → 分片 → 多信道分发 → 网络传输           │
+│  接收流程：网络接收 → 重组 → Codec解码 → 原始数据                         │
+│  协商流程：WebSocket信道 → Bitmap交换 → 信道/Codec匹配                   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+## 快速开始
+
+### Client 端示例
+
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+    
+    voidbus "github.com/Script-OS/VoidBus"
+    "github.com/Script-OS/VoidBus/channel"
+    "github.com/Script-OS/VoidBus/channel/ws"
+    "github.com/Script-OS/VoidBus/codec/aes"
+    "github.com/Script-OS/VoidBus/codec/base64"
+)
+
+func main() {
+    // 1. 创建Bus实例
+    bus, err := voidbus.New(nil)
+    if err != nil {
+        panic(err)
+    }
+    defer bus.Stop()
+
+    // 2. 设置密钥 (AES-256需要32字节密钥)
+    key := []byte("32-byte-secret-key-for-aes-256!!")
+    if err := bus.SetKey(key); err != nil {
+        panic(err)
+    }
+
+    // 3. 注册Codec (用户自定义代号，需双端一致)
+    bus.RegisterCodec(aes.NewAES256Codec())    // 代号: "aes"
+    bus.RegisterCodec(base64.New())            // 代号: "base64"
+
+    // 4. 添加信道
+    bus.AddChannel(ws.NewClientChannel(channel.ChannelConfig{
+        Address:        "ws://localhost:8080/ws",
+        ConnectTimeout: 10 * time.Second,
+    }))
+
+    // 5. 建立连接 (自动协商)
+    conn, err := bus.Dial()
+    if err != nil {
+        panic(err)
+    }
+    defer conn.Close()
+
+    // 6. 发送消息
+    message := []byte("Hello, VoidBus!")
+    if _, err := conn.Write(message); err != nil {
+        panic(err)
+    }
+    fmt.Printf("Sent: %s\n", message)
+
+    // 7. 接收消息
+    buf := make([]byte, 4096)
+    n, err := conn.Read(buf)
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Received: %s\n", buf[:n])
+}
+```
+
+### Server 端示例
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    
+    voidbus "github.com/Script-OS/VoidBus"
+    "github.com/Script-OS/VoidBus/channel"
+    "github.com/Script-OS/VoidBus/channel/ws"
+    "github.com/Script-OS/VoidBus/codec/aes"
+    "github.com/Script-OS/VoidBus/codec/base64"
+)
+
+func main() {
+    // 1. 创建Bus实例
+    bus, err := voidbus.New(nil)
+    if err != nil {
+        panic(err)
+    }
+    defer bus.Stop()
+
+    // 2. 设置密钥 (需与Client一致)
+    key := []byte("32-byte-secret-key-for-aes-256!!")
+    if err := bus.SetKey(key); err != nil {
+        panic(err)
+    }
+
+    // 3. 注册Codec (需与Client一致)
+    bus.RegisterCodec(aes.NewAES256Codec())
+    bus.RegisterCodec(base64.New())
+
+    // 4. 添加Server信道
+    bus.AddChannel(ws.NewServerChannel(channel.ChannelConfig{
+        Address: ":8080",
+    }))
+
+    // 5. 启动监听 (聚合所有信道)
+    listener, err := bus.Listen()
+    if err != nil {
+        panic(err)
+    }
+    defer listener.Close()
+
+    fmt.Println("Server listening on :8080")
+
+    // 6. 接受连接
+    for {
+        conn, err := listener.Accept()
+        if err != nil {
+            fmt.Printf("Accept error: %v\n", err)
+            continue
+        }
+
+        go handleConnection(conn)
+    }
+}
+
+func handleConnection(conn net.Conn) {
+    defer conn.Close()
+
+    buf := make([]byte, 4096)
+    for {
+        // 接收消息
+        n, err := conn.Read(buf)
+        if err != nil {
+            if err == io.EOF {
+                fmt.Println("Client disconnected")
+            } else {
+                fmt.Printf("Read error: %v\n", err)
+            }
+            return
+        }
+
+        fmt.Printf("Received: %s\n", buf[:n])
+
+        // 回显消息
+        if _, err := conn.Write(buf[:n]); err != nil {
+            fmt.Printf("Write error: %v\n", err)
+            return
+        }
+    }
+}
+```
+
+### 运行示例
+
+```bash
+# 启动Server
+go run server.go
+
+# 在另一个终端启动Client
+go run client.go
+```
+
 ## 核心特性
 
 - **三层分离架构**：Codec（编解码）+ Channel（信道）+ Fragment（分片）- 用户自行序列化
@@ -13,8 +227,6 @@ VoidBus 是一个高度模块化、可组合的隐蔽通信总线库，实现信
 - **Bitmap协商协议**：二进制格式协商可用信道和Codec（非明文）
 - **信道健康度评估**：基于健康度加权随机选择信道，故障自动切换
 - **可靠/不可靠信道区分**：可靠信道信任协议，不可靠信道实现ACK/NAK重传
-- **协议安全验证**：Header完整安全验证，防止资源耗尽和重放攻击
-- **统一错误处理**：增强错误类型，支持严重程度和上下文信息
 
 ## 目录结构
 
@@ -142,7 +354,7 @@ Channel.Send()超时3s无ACK
 
 ## 协商协议
 
-VoidBus v2.1 使用二进制Bitmap格式协商（非明文）：
+VoidBus 使用二进制Bitmap格式协商（非明文）：
 
 ### NegotiateRequest帧格式
 ```
@@ -172,48 +384,6 @@ VoidBus v2.1 使用二进制Bitmap格式协商（非明文）：
 | UDP | ❌ | 需ACK/NAK重传（3s超时） |
 | ICMP | ❌ | 需可靠重传 |
 | DNS | ❌ | 需可靠重传 |
-
-## 安全验证
-
-VoidBus v2.0 在 Protocol Header 层面实现了完整的安全验证：
-
-| 验证项 | 限制 | 说明 |
-|--------|------|------|
-| PacketSize | 84-65535字节 | 防止过大/过小包 |
-| SessionID | 1-64字符 | 防止内存耗尽 |
-| FragmentTotal | ≤10000 | 防止资源耗尽 |
-| CodecDepth | 1-5 | 防止深度溢出 |
-| Timestamp | ±1小时 | 防止重放攻击 |
-| Flags | 仅允许已知位 | 防止未知标志 |
-
-## 错误处理
-
-VoidBus v2.0 实现了统一的错误处理策略：
-
-```go
-// 错误严重程度
-type ErrorSeverity int
-const (
-    SeverityLow      // 可恢复
-    SeverityMedium   // 需处理  
-    SeverityHigh     // 严重影响
-    SeverityCritical // 致命错误
-)
-
-// 增强错误类型
-type EnhancedVoidBusError struct {
-    *VoidBusError
-    Severity    ErrorSeverity
-    Recoverable bool
-    Context     map[string]interface{}
-}
-
-// 统一错误包装函数
-MustWrap(op, module, err)      // 关键路径
-SoftWrap(op, module, err)      // 可选路径
-RecoverableError(...)          // 可恢复错误
-CriticalError(...)             // 致命错误
-```
 
 ## 快速开始
 
