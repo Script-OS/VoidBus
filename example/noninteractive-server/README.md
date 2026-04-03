@@ -38,19 +38,32 @@ go run main.go 192.168.1.100
 
 ## 传输流程
 
+采用双向确认机制，确保数据完整传输：
+
 ```
 Client                              Server
   │                                   │
   │──── Connect (TCP + WS + UDP) ────→│
   │                                   │
-  │──── Send file size (8 bytes) ────→│
-  │──── Send file data (~10MB) ──────→│
+  │──── Phase 1: Send file ──────────→│
+  │      Send file size (8 bytes)     │
+  │      Send file data (~10MB)       │
   │                                   │
-  │←── Receive file size (8 bytes) ───│
-  │←── Receive file data (~10MB) ─────│
+  │←── ACK: TransferComplete Magic ───│ Server确认接收完成
   │                                   │
-  │←───────── ACK complete ──────────→│
+  │←─── Phase 2: Receive file ────────│
+  │      Receive file size (8 bytes)  │
+  │      Receive file data (~10MB)    │
+  │                                   │
+  │──── ACK: TransferComplete Magic ─→│ Client确认接收完成
+  │                                   │
+  │←──────── Transfer complete ──────→│
 ```
+
+**确认机制说明**：
+- 使用 Go 的 channel + goroutine 通知机制，避免简单的 `time.Sleep` 等待
+- `TransferCompleteMagic` = `"DONE1234"` (8字节固定长度)
+- 超时时间：5分钟（与 ReadDeadline 一致）
 
 ## 日志示例
 

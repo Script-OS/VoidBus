@@ -7,17 +7,21 @@
 // The client will:
 // 1. Connect to server via TCP/WS/UDP
 // 2. Send a file (test_file.bin from current directory)
-// 3. Receive a file back (saved as received_file.bin)
-// 4. Display detailed logs with channel/codec information
-// 5. Exit after transfer completes
+// 3. Wait for server acknowledgment
+// 4. Receive a file back (saved as received_file.bin)
+// 5. Send acknowledgment to server
+// 6. Display detailed logs with channel/codec information
+// 7. Exit after transfer completes
 package main
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -32,6 +36,45 @@ import (
 	"github.com/Script-OS/VoidBus/codec/chacha20"
 	"github.com/Script-OS/VoidBus/codec/xor"
 )
+
+// TransferCompleteMagic is the magic number for transfer completion acknowledgment.
+// Fixed 8 bytes for reliable ReadFull.
+const TransferCompleteMagic = "DONE1234"
+
+// sendTransferComplete sends a transfer completion acknowledgment.
+// Uses a fixed 8-byte magic number for reliable transmission.
+func sendTransferComplete(conn net.Conn) error {
+	magic := []byte(TransferCompleteMagic)
+	_, err := conn.Write(magic)
+	return err
+}
+
+// waitTransferComplete waits for transfer completion acknowledgment using channel notification.
+// Returns error on timeout or invalid magic received.
+func waitTransferComplete(conn net.Conn, timeout time.Duration) error {
+	done := make(chan error, 1)
+
+	go func() {
+		buf := make([]byte, 8)
+		_, err := io.ReadFull(conn, buf)
+		if err != nil {
+			done <- err
+			return
+		}
+		if string(buf) != TransferCompleteMagic {
+			done <- errors.New("invalid transfer complete magic")
+			return
+		}
+		done <- nil
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return errors.New("timeout waiting for transfer complete")
+	}
+}
 
 const (
 	tcpPort = 19000
@@ -181,6 +224,13 @@ func main() {
 		}
 	}
 
+	// Wait for server's transfer complete acknowledgment using channel notification
+	log.Println("Waiting for server transfer complete acknowledgment...")
+	if err := waitTransferComplete(conn, 5*time.Minute); err != nil {
+		log.Fatalf("Failed to receive transfer complete from server: %v", err)
+	}
+	log.Println("Server transfer complete acknowledgment received")
+
 	log.Println("")
 
 	// === Phase 2: Receive file from server ===
@@ -250,6 +300,14 @@ func main() {
 
 	receivedFile.Close()
 	log.Printf("File saved: received_file.bin")
+
+	// Send transfer complete acknowledgment to server
+	log.Println("Sending transfer complete acknowledgment...")
+	if err := sendTransferComplete(conn); err != nil {
+		log.Fatalf("Failed to send transfer complete: %v", err)
+	}
+	log.Println("Transfer complete acknowledgment sent")
+
 	log.Println("")
 
 	log.Println("=== Transfer complete ===")

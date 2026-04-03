@@ -4,9 +4,11 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -21,6 +23,45 @@ import (
 	"github.com/Script-OS/VoidBus/codec/chacha20"
 	"github.com/Script-OS/VoidBus/codec/xor"
 )
+
+// TransferCompleteMagic is the magic number for transfer completion acknowledgment.
+// Fixed 8 bytes for reliable ReadFull.
+const TransferCompleteMagic = "DONE1234"
+
+// sendTransferComplete sends a transfer completion acknowledgment.
+// Uses a fixed 8-byte magic number for reliable transmission.
+func sendTransferComplete(conn net.Conn) error {
+	magic := []byte(TransferCompleteMagic)
+	_, err := conn.Write(magic)
+	return err
+}
+
+// waitTransferComplete waits for transfer completion acknowledgment using channel notification.
+// Returns error on timeout or invalid magic received.
+func waitTransferComplete(conn net.Conn, timeout time.Duration) error {
+	done := make(chan error, 1)
+
+	go func() {
+		buf := make([]byte, 8)
+		_, err := io.ReadFull(conn, buf)
+		if err != nil {
+			done <- err
+			return
+		}
+		if string(buf) != TransferCompleteMagic {
+			done <- errors.New("invalid transfer complete magic")
+			return
+		}
+		done <- nil
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return errors.New("timeout waiting for transfer complete")
+	}
+}
 
 const (
 	tcpPort = 19000
@@ -133,6 +174,13 @@ func main() {
 	log.Printf("File saved: received_file.bin")
 	log.Println("")
 
+	// Send transfer complete acknowledgment to client
+	log.Println("Sending transfer complete acknowledgment...")
+	if err := sendTransferComplete(conn); err != nil {
+		log.Fatalf("Failed to send transfer complete: %v", err)
+	}
+	log.Println("Transfer complete acknowledgment sent")
+
 	// === Phase 2: Send file to client ===
 	log.Println("=== Phase 2: Sending file to client ===")
 
@@ -226,10 +274,12 @@ func main() {
 		}
 	}
 
-	// Wait for all data to be actually sent over the network
-	// VoidBus Write() returns when data is queued, not when sent
-	log.Println("Waiting for data to flush...")
-	time.Sleep(2 * time.Second)
+	// Wait for client's transfer complete acknowledgment using channel notification
+	log.Println("Waiting for client transfer complete acknowledgment...")
+	if err := waitTransferComplete(conn, 5*time.Minute); err != nil {
+		log.Fatalf("Failed to receive transfer complete from client: %v", err)
+	}
+	log.Println("Client transfer complete acknowledgment received")
 
 	log.Println("")
 	log.Println("=== Transfer complete ===")
