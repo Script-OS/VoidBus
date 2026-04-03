@@ -70,9 +70,8 @@ func main() {
 	}
 	log.Println("Max codec depth: 3")
 
-	// Enable debug mode for detailed logs
-	bus.SetDebugMode(true)
-	log.Println("Debug mode: enabled")
+	// Disable debug mode to reduce log noise
+	bus.SetDebugMode(false)
 
 	// Register codecs
 	bus.RegisterCodec(base64.New())
@@ -141,7 +140,6 @@ func main() {
 		log.Fatalf("Failed to hash file: %v", err)
 	}
 	sendHash := hex.EncodeToString(sendHasher.Sum(nil))
-	log.Printf("File SHA256: %s", sendHash)
 
 	// Reset file position for actual sending
 	sendFile.Seek(0, 0)
@@ -214,9 +212,7 @@ func main() {
 
 	receivedHash := hex.EncodeToString(hasher.Sum(nil))
 
-	log.Printf("File received: %d bytes in %v", received, recvDuration)
-	log.Printf("Receive rate: %.2f MB/s", float64(received)/1024/1024/recvDuration.Seconds())
-	log.Printf("File SHA256: %s", receivedHash)
+	log.Printf("File received: %d bytes in %v (%.2f MB/s)", received, recvDuration, float64(received)/1024/1024/recvDuration.Seconds())
 
 	// Get server's send info
 	if vconn, ok := conn.(interface{ GetLastSendInfo() *voidbus.SendInfo }); ok {
@@ -231,9 +227,15 @@ func main() {
 	log.Println("")
 
 	log.Println("=== Transfer complete ===")
-	log.Printf("Sent: test_file.bin (%d bytes, SHA256: %s)", sendFileSize, sendHash)
-	log.Printf("Received: received_file.bin (%d bytes, SHA256: %s)", fileSize, receivedHash)
-	log.Println("Client exiting...")
+	log.Printf("Sent:     test_file.bin (%d bytes)", sendFileSize)
+	log.Printf("  SHA256: %s", sendHash)
+	log.Printf("Received: received_file.bin (%d bytes)", fileSize)
+	log.Printf("  SHA256: %s", receivedHash)
+
+	// Explicitly close connection and stop bus to ensure clean exit
+	conn.Close()
+	bus.Stop()
+	log.Println("Client exited successfully")
 }
 
 func mustChannel(ch channel.Channel, err error) channel.Channel {

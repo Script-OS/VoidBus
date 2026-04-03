@@ -50,8 +50,8 @@ func main() {
 	}
 	log.Println("Max codec depth: 3")
 
-	bus.SetDebugMode(true)
-	log.Println("Debug mode: enabled")
+	// Disable debug mode to reduce log noise
+	bus.SetDebugMode(false)
 
 	bus.RegisterCodec(base64.New())
 	bus.RegisterCodec(xor.New())
@@ -117,9 +117,7 @@ func main() {
 
 	receivedHash := hex.EncodeToString(hasher.Sum(nil))
 
-	log.Printf("File received: %d bytes in %v", received, recvDuration)
-	log.Printf("Receive rate: %.2f MB/s", float64(received)/1024/1024/recvDuration.Seconds())
-	log.Printf("File SHA256: %s", receivedHash)
+	log.Printf("File received: %d bytes in %v (%.2f MB/s)", received, recvDuration, float64(received)/1024/1024/recvDuration.Seconds())
 
 	if vconn, ok := conn.(interface{ GetLastSendInfo() *voidbus.SendInfo }); ok {
 		info := vconn.GetLastSendInfo()
@@ -158,7 +156,6 @@ func main() {
 		log.Fatalf("Failed to hash file: %v", err)
 	}
 	sendHash := hex.EncodeToString(sendHasher.Sum(nil))
-	log.Printf("File SHA256: %s", sendHash)
 
 	// Reset file position for actual sending
 	sendFile.Seek(0, 0)
@@ -185,8 +182,7 @@ func main() {
 	}
 	sendDuration := time.Since(startTime)
 
-	log.Printf("File sent: %d bytes in %v", sent, sendDuration)
-	log.Printf("Send rate: %.2f MB/s", float64(sent)/1024/1024/sendDuration.Seconds())
+	log.Printf("File sent: %d bytes in %v (%.2f MB/s)", sent, sendDuration, float64(sent)/1024/1024/sendDuration.Seconds())
 
 	if vconn, ok := conn.(interface{ GetLastSendInfo() *voidbus.SendInfo }); ok {
 		info := vconn.GetLastSendInfo()
@@ -197,9 +193,14 @@ func main() {
 
 	log.Println("")
 	log.Println("=== Transfer complete ===")
-	log.Printf("Received: received_file.bin (%d bytes, SHA256: %s)", fileSize, receivedHash)
-	log.Printf("Sent: test_file.bin (%d bytes, SHA256: %s)", sendFileSize, sendHash)
-	log.Println("Server exiting...")
+	log.Printf("Received: received_file.bin (%d bytes)", fileSize)
+	log.Printf("  SHA256: %s", receivedHash)
+	log.Printf("Sent:     test_file.bin (%d bytes)", sendFileSize)
+	log.Printf("  SHA256: %s", sendHash)
+
+	conn.Close()
+	bus.Stop()
+	log.Println("Server exited successfully")
 }
 
 func mustChannel(ch channel.Channel, err error) channel.Channel {
