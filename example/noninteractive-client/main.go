@@ -13,6 +13,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -133,6 +135,17 @@ func main() {
 	sendFileSize := fileInfo.Size()
 	log.Printf("File to send: %s (%d bytes, %.2f MB)", testFile, sendFileSize, float64(sendFileSize)/1024/1024)
 
+	// Calculate hash before sending
+	sendHasher := sha256.New()
+	if _, err := io.Copy(sendHasher, sendFile); err != nil {
+		log.Fatalf("Failed to hash file: %v", err)
+	}
+	sendHash := hex.EncodeToString(sendHasher.Sum(nil))
+	log.Printf("File SHA256: %s", sendHash)
+
+	// Reset file position for actual sending
+	sendFile.Seek(0, 0)
+
 	// Send file size first (8 bytes, big-endian)
 	sizeBuf := make([]byte, 8)
 	sizeBuf[0] = byte(sendFileSize >> 56)
@@ -182,22 +195,28 @@ func main() {
 		int64(sizeBuf[4])<<24 | int64(sizeBuf[5])<<16 | int64(sizeBuf[6])<<8 | int64(sizeBuf[7])
 	log.Printf("Incoming file size: %d bytes (%.2f MB)", fileSize, float64(fileSize)/1024/1024)
 
-	// Receive file data
+	// Receive file data with hash calculation
 	receivedFile, err := os.Create("received_file.bin")
 	if err != nil {
 		log.Fatalf("Failed to create output file: %v", err)
 	}
 	defer receivedFile.Close()
 
+	hasher := sha256.New()
+	multiWriter := io.MultiWriter(receivedFile, hasher)
+
 	startTime = time.Now()
-	received, err := io.CopyN(receivedFile, conn, fileSize)
+	received, err := io.CopyN(multiWriter, conn, fileSize)
 	if err != nil {
 		log.Fatalf("Failed to receive file: %v", err)
 	}
 	recvDuration := time.Since(startTime)
 
+	receivedHash := hex.EncodeToString(hasher.Sum(nil))
+
 	log.Printf("File received: %d bytes in %v", received, recvDuration)
 	log.Printf("Receive rate: %.2f MB/s", float64(received)/1024/1024/recvDuration.Seconds())
+	log.Printf("File SHA256: %s", receivedHash)
 
 	// Get server's send info
 	if vconn, ok := conn.(interface{ GetLastSendInfo() *voidbus.SendInfo }); ok {
@@ -212,8 +231,8 @@ func main() {
 	log.Println("")
 
 	log.Println("=== Transfer complete ===")
-	log.Printf("Sent: test_file.bin (%d bytes)", sendFileSize)
-	log.Printf("Received: received_file.bin (%d bytes)", fileSize)
+	log.Printf("Sent: test_file.bin (%d bytes, SHA256: %s)", sendFileSize, sendHash)
+	log.Printf("Received: received_file.bin (%d bytes, SHA256: %s)", fileSize, receivedHash)
 	log.Println("Client exiting...")
 }
 
