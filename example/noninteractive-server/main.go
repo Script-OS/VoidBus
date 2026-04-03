@@ -226,6 +226,11 @@ func main() {
 		}
 	}
 
+	// Wait for all data to be actually sent over the network
+	// VoidBus Write() returns when data is queued, not when sent
+	log.Println("Waiting for data to flush...")
+	time.Sleep(2 * time.Second)
+
 	log.Println("")
 	log.Println("=== Transfer complete ===")
 	log.Printf("Received: received_file.bin (%d bytes)", fileSize)
