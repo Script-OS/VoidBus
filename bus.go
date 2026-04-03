@@ -68,12 +68,10 @@ type Bus struct {
 	// Server channels (for Listen aggregation)
 	serverChannels map[string]channel.ServerChannel
 
-	// State
-	connected  atomic.Bool
-	negotiated atomic.Bool
-	running    atomic.Bool
-	stopChan   chan struct{}
-	wg         sync.WaitGroup
+	// State (v3.0 improvement: single state enum instead of three atomic.Bool)
+	state    atomic.Int32 // Single state variable: StateIdle -> StateConnected -> StateNegotiated -> StateRunning -> StateClosed
+	stopChan chan struct{}
+	wg       sync.WaitGroup
 
 	// Receive
 	recvQueue chan []byte
@@ -192,12 +190,14 @@ func (b *Bus) DialChannel(ch channel.Channel) (net.Conn, error) {
 // dialWithChannel is the internal implementation.
 // If ch is nil, uses the first registered channel.
 func (b *Bus) dialWithChannel(ch channel.Channel) (net.Conn, error) {
+	// State transition: StateIdle -> StateConnected
+	// Note: setState() holds b.mu internally, so we call it without holding the lock
+	if err := b.setState(StateConnected); err != nil {
+		return nil, err
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	if b.connected.Load() {
-		return nil, ErrBusAlreadyRunning
-	}
 
 	// Get all channel IDs
 	channelIDs := b.channelPool.GetChannelIDs()
@@ -236,60 +236,61 @@ func (b *Bus) dialWithChannel(ch channel.Channel) (net.Conn, error) {
 		negotiateCh = firstChInfo.Channel
 	}
 
-	// Mark as connected
-	b.connected.Store(true)
-
 	// Create negotiation request
 	codecBitmap := b.codecManager.GenerateCodecBitmap()
 	channelBitmap := b.channelPool.GenerateChannelBitmap()
 	if isBitmapEmpty(codecBitmap) {
-		b.connected.Store(false)
+		b.setState(StateClosed)
 		return nil, errors.New("no codecs registered")
 	}
 	if isBitmapEmpty(channelBitmap) {
-		b.connected.Store(false)
+		b.setState(StateClosed)
 		return nil, errors.New("no channels registered")
 	}
 
 	// First connection: sessionID is nil
 	request, err := negotiate.NewNegotiateRequest(channelBitmap, codecBitmap, nil)
 	if err != nil {
-		b.connected.Store(false)
+		b.setState(StateClosed)
 		return nil, WrapModuleError("NewNegotiateRequest", "negotiate", err)
 	}
 
 	// Send negotiation request through selected channel
 	requestData, err := request.Encode()
 	if err != nil {
-		b.connected.Store(false)
+		b.setState(StateClosed)
 		return nil, WrapModuleError("EncodeNegotiateRequest", "negotiate", err)
 	}
 
 	if err := negotiateCh.Send(requestData); err != nil {
-		b.connected.Store(false)
+		b.setState(StateClosed)
 		return nil, WrapModuleError("SendNegotiateRequest", "channel", err)
 	}
 
 	// Receive negotiation response
 	responseData, err := negotiateCh.Receive()
 	if err != nil {
-		b.connected.Store(false)
+		b.setState(StateClosed)
 		return nil, WrapModuleError("ReceiveNegotiateResponse", "channel", err)
 	}
 
 	response, err := negotiate.DecodeNegotiateResponse(responseData)
 	if err != nil {
-		b.connected.Store(false)
+		b.setState(StateClosed)
 		return nil, WrapModuleError("DecodeNegotiateResponse", "negotiate", err)
 	}
 
 	// Apply negotiation response
 	if err := b.codecManager.SetNegotiatedBitmap(response.CodecBitmap); err != nil {
-		b.connected.Store(false)
+		b.setState(StateClosed)
 		return nil, WrapModuleError("SetNegotiatedBitmap", "codec", err)
 	}
 	b.channelPool.SetNegotiatedChannelBitmap(response.ChannelBitmap)
-	b.negotiated.Store(true)
+
+	// State transition: StateConnected -> StateNegotiated
+	if err := b.setState(StateNegotiated); err != nil {
+		return nil, err
+	}
 
 	// Negotiate remaining channels with SessionID in parallel
 	// Note: Each negotiateChannel will start its own receiveLoop after negotiation completes
@@ -307,7 +308,10 @@ func (b *Bus) dialWithChannel(ch channel.Channel) (net.Conn, error) {
 	}
 
 	// Start receive loop only for the initial negotiation channel
-	b.running.Store(true)
+	// State transition: StateNegotiated -> StateRunning
+	if err := b.setState(StateRunning); err != nil {
+		return nil, err
+	}
 	go b.nakBatchLoop()
 	info, err := b.channelPool.GetChannel(negotiateChID)
 	if err == nil {
@@ -404,7 +408,7 @@ func (b *Bus) negotiateChannelAndStartReceive(channelID string, ch channel.Chann
 	success := b.negotiateChannel(channelID, ch, sessionID, channelBitmap, codecBitmap)
 
 	// Only start receive loop if negotiation was successful
-	if success && b.running.Load() {
+	if success && b.isRunning() {
 		info, err := b.channelPool.GetChannel(channelID)
 		if err == nil {
 			b.wg.Add(1)
@@ -419,17 +423,20 @@ func (b *Bus) negotiateChannelAndStartReceive(channelID string, ch channel.Chann
 // Listen aggregates all registered ServerChannels and waits for multi-channel sessions.
 // Each Accept returns a net.Conn when all negotiated channels are connected.
 func (b *Bus) Listen() (net.Listener, error) {
+	// State transition: StateIdle -> StateRunning
+	// Note: setState() holds b.mu internally
+	if err := b.setState(StateRunning); err != nil {
+		return nil, err
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	// Check if any server channels are registered
 	if len(b.serverChannels) == 0 {
+		b.setState(StateClosed)
 		return nil, errors.New("no server channels registered")
 	}
-
-	// Mark as running
-	b.running.Store(true)
-	b.connected.Store(true)
 
 	// Create listener with session timeout from config
 	sessionTimeout := b.config.NegotiateTimeout
@@ -456,7 +463,8 @@ func (b *Bus) sendInternalWithInfo(ctx context.Context, data []byte) (*SendInfo,
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	if !b.connected.Load() || !b.negotiated.Load() {
+	// Check if bus is connected and negotiated (lock-free state check)
+	if !b.isConnected() || !b.isNegotiated() {
 		return nil, ErrChannelNotReady
 	}
 
@@ -888,14 +896,20 @@ func (b *Bus) sendEND_ACK(sessionID string) error {
 // It closes all channels first to unblock any goroutines waiting on Receive(),
 // then waits for all goroutines to exit cleanly.
 func (b *Bus) Stop() error {
+	// State transition: StateRunning -> StateClosed
+	// Note: setState() holds b.mu internally
+	if err := b.setState(StateClosed); err != nil {
+		// If already closed or in wrong state, still try to clean up
+		if err != ErrBusClosed {
+			return err
+		}
+		// Already closed, return success
+		return nil
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if !b.running.Load() {
-		return ErrBusNotRunning
-	}
-
-	b.running.Store(false)
 	close(b.stopChan)
 
 	// Close all channels to unblock receiveLoop goroutines waiting on Receive().

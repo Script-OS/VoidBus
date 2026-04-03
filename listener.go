@@ -371,15 +371,22 @@ func channelTypeToBit(chType channel.ChannelType) negotiate.ChannelBit {
 // startClientBusAndReturnConn starts the client bus and returns the connection.
 // Note: receiveLoop for the channel should already be started in handleClient.
 func (l *voidBusListener) startClientBusAndReturnConn(session *negotiate.SessionState, clientBus *Bus, channelID string, chType channel.ChannelType) {
-	// Mark client bus as connected and negotiated
-	clientBus.connected.Store(true)
-	clientBus.negotiated.Store(true)
+	// State transition: StateIdle -> StateNegotiated (skip StateConnected)
+	// Server-side clientBus is already negotiated during handleClient
+	if err := clientBus.setState(StateNegotiated); err != nil {
+		// Should not happen for new bus, but handle error
+		clientBus.Stop()
+		return
+	}
 
 	// Create receive channel for complete messages
 	recvChan := make(chan []byte, 100)
 
-	// Mark bus as running and start NAK batch loop
-	clientBus.running.Store(true)
+	// State transition: StateNegotiated -> StateRunning
+	if err := clientBus.setState(StateRunning); err != nil {
+		clientBus.Stop()
+		return
+	}
 	go clientBus.nakBatchLoop()
 
 	// Create VoidBusConn
