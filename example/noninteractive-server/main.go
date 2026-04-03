@@ -35,7 +35,10 @@ func main() {
 	log.Println("=== VoidBus Non-Interactive Server ===")
 	log.Println("Starting server...")
 
-	bus, err := voidbus.New(nil)
+	// Create bus with larger buffer for file transfer
+	config := voidbus.DefaultBusConfig()
+	config.RecvBufferSize = 1000 // Increase buffer for large file transfer
+	bus, err := voidbus.New(config)
 	if err != nil {
 		log.Fatalf("Failed to create bus: %v", err)
 	}
@@ -175,14 +178,44 @@ func main() {
 	}
 	log.Printf("Sent file size header: %d bytes", sendFileSize)
 
+	// Set write deadline for large file transfer
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Minute))
+
+	// Send file content in chunks with progress logging
 	startTime = time.Now()
-	sent, err := io.CopyN(conn, sendFile, sendFileSize)
-	if err != nil {
-		log.Fatalf("Failed to send file: %v", err)
+	buf := make([]byte, 64*1024) // 64KB chunks
+	totalSent := int64(0)
+
+	for totalSent < sendFileSize {
+		remaining := sendFileSize - totalSent
+		toRead := int64(len(buf))
+		if remaining < toRead {
+			toRead = remaining
+		}
+
+		n, err := sendFile.Read(buf[:toRead])
+		if err != nil {
+			log.Fatalf("Failed to read file: %v", err)
+		}
+
+		wrote, err := conn.Write(buf[:n])
+		if err != nil {
+			log.Fatalf("Failed to send file chunk: %v", err)
+		}
+		totalSent += int64(wrote)
+
+		// Log progress every 1MB
+		if totalSent%(1024*1024) == 0 || totalSent == sendFileSize {
+			elapsed := time.Since(startTime)
+			rate := float64(totalSent) / 1024 / 1024 / elapsed.Seconds()
+			log.Printf("Progress: %d/%d bytes (%.1f%%, %.2f MB/s)",
+				totalSent, sendFileSize, float64(totalSent)/float64(sendFileSize)*100, rate)
+		}
 	}
+
 	sendDuration := time.Since(startTime)
 
-	log.Printf("File sent: %d bytes in %v (%.2f MB/s)", sent, sendDuration, float64(sent)/1024/1024/sendDuration.Seconds())
+	log.Printf("File sent: %d bytes in %v (%.2f MB/s)", totalSent, sendDuration, float64(totalSent)/1024/1024/sendDuration.Seconds())
 
 	if vconn, ok := conn.(interface{ GetLastSendInfo() *voidbus.SendInfo }); ok {
 		info := vconn.GetLastSendInfo()

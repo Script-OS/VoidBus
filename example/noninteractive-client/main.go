@@ -45,18 +45,20 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	log.Println("=== VoidBus Non-Interactive Client ===")
 
-	// Get server host
 	serverHost := "127.0.0.1"
 	if len(os.Args) > 1 {
 		serverHost = os.Args[1]
 	}
 	log.Printf("Server: %s", serverHost)
 
-	// Create bus
-	bus, err := voidbus.New(nil)
+	// Create bus with larger buffer for file transfer
+	config := voidbus.DefaultBusConfig()
+	config.RecvBufferSize = 1000 // Increase buffer for large file transfer
+	bus, err := voidbus.New(config)
 	if err != nil {
 		log.Fatalf("Failed to create bus: %v", err)
 	}
+	log.Printf("Server: %s", serverHost)
 
 	// Set key (must match server)
 	if err := bus.SetKey([]byte(key)); err != nil {
@@ -192,6 +194,9 @@ func main() {
 	fileSize := int64(sizeBuf[0])<<56 | int64(sizeBuf[1])<<48 | int64(sizeBuf[2])<<40 | int64(sizeBuf[3])<<32 |
 		int64(sizeBuf[4])<<24 | int64(sizeBuf[5])<<16 | int64(sizeBuf[6])<<8 | int64(sizeBuf[7])
 	log.Printf("Incoming file size: %d bytes (%.2f MB)", fileSize, float64(fileSize)/1024/1024)
+
+	// Set read deadline for large file transfer
+	conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 
 	// Receive file data with hash calculation
 	receivedFile, err := os.Create("received_file.bin")
