@@ -1,17 +1,53 @@
-# VoidBus Interactive Example
+# VoidBus Examples
 
-这个示例展示了如何使用 VoidBus 通过多个 channel（TCP、WebSocket、UDP）和多种 codec（base64、xor、aes、chacha20）进行双向通信。
+这个目录包含了 VoidBus 的使用示例。
+
+## 示例列表
+
+### 1. 交互式示例 (`client/` 和 `server/`)
+
+交互式的 client 和 server，适合手动测试多 channel 分布和编解码。
+
+```bash
+# 终端 1
+cd example/server
+go run main.go
+
+# 终端 2
+cd example/client
+go run main.go
+```
+
+### 2. 非交互式文件传输 (`noninteractive-server/` 和 `noninteractive-client/`)
+
+自动传输 ~10MB 文件，显示完整日志和性能数据。
+
+```bash
+# 终端 1
+cd example/noninteractive-server
+go run main.go
+
+# 终端 2
+cd example/noninteractive-client
+go run main.go
+```
+
+详见 [noninteractive-server/README.md](noninteractive-server/README.md)。
+
+---
 
 ## 架构特性演示
 
 - **多 Channel 同时使用**：TCP/WS/UDP 同时连接，分片随机分布到不同 channel
-- **多 Codec 随机组合**：每条消息使用随机 codec 链（最多 depth=2）
+- **多 Codec 随机组合**：最大深度限制为 3
 - **Session-based 关联**：Client 通过 SessionID 将所有 channel 关联到同一连接
 - **健康权重选择**：ChannelPool 根据健康度加权随机选择 channel
 - **优雅退出**：Ctrl+C 后正确清理所有 goroutine 和资源
 - **Debug 模式**：显示消息实际使用的 channel 和 codec 链
 
-## 运行方式
+---
+
+## 交互式示例详情
 
 ### 启动 Server
 
